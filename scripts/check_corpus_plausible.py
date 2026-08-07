@@ -74,20 +74,30 @@ def problems(path: Path) -> list[str]:
             except sqlite3.Error as exc:
                 found.append(f"{table}.{column}: unreadable ({exc})")
                 continue
-            # Some cards legitimately have no rules text (vanilla creatures),
-            # so this is a "most of them are empty" check, not "any".
-            if total and blank > total // 2:
+            # Tolerances chosen per column rather than a blanket half. Half
+            # the cards having no name passed the earlier check while the
+            # corpus was unusable; meanwhile plenty of real cards legitimately
+            # have no rules text, so that one has to stay loose.
+            limit = {"name": 0.01, "oracle_text": 0.60, "comment": 0.05}[column]
+            if total and blank > total * limit:
                 found.append(
-                    f"{table}.{column}: {blank} of {total} rows are empty")
+                    f"{table}.{column}: {blank} of {total} rows are empty "
+                    f"(over the {limit:.0%} tolerance)")
 
+        # PROPORTIONATE, not merely non-empty. One row in cards_fts passed a
+        # "not empty" test while almost every card lookup failed, which is the
+        # same shape of hole as accepting a corpus because it has rows.
         for fts, base in (("cards_fts", "cards"), ("rules_fts", "rules")):
             try:
                 n = con.execute(f"SELECT count(*) FROM {fts}").fetchone()[0]
+                b = con.execute(f"SELECT count(*) FROM {base}").fetchone()[0]
             except sqlite3.Error as exc:
                 found.append(f"{fts}: unreadable ({exc}) — search would fail")
                 continue
-            if n == 0:
-                found.append(f"{fts} is empty; every search would return nothing")
+            if b and n < b // 2:
+                found.append(
+                    f"{fts} holds {n} rows for {b} in {base}; most searches "
+                    "would find nothing")
 
         # Subrules are the shape that breaks first when the parser drifts.
         subrules = con.execute(

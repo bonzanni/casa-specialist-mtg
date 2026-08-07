@@ -46,16 +46,23 @@ def _cr_stamp(effective: str) -> str:
 
 
 def _scryfall_stamp(updated_at: str) -> str:
-    """'2026-08-07T09:03:15.937+00:00' -> '20260807'."""
+    """'2026-08-07T09:03:15.937+00:00' -> '20260807T090315'.
+
+    To the SECOND, not the day. Truncating to a date meant two snapshots
+    published on one UTC day — which happens — produced the same tag, so the
+    second build either skipped as already-done or collided with an existing
+    asset and refused. Identity has to be at least as precise as the thing it
+    identifies.
+    """
     text = updated_at.strip()
-    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", text)
-    if not m:
-        # Older builds fell back to a bare build date for this field.
-        try:
-            return datetime.strptime(text, "%Y-%m-%d").strftime("%Y%m%d")
-        except ValueError:
-            raise ValueError(f"unparseable scryfall_updated_at {text!r}") from None
-    return m.group(1) + m.group(2) + m.group(3)
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})", text)
+    if m:
+        return f"{m.group(1)}{m.group(2)}{m.group(3)}T{m.group(4)}{m.group(5)}{m.group(6)}"
+    # Older builds fell back to a bare build date for this field.
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").strftime("%Y%m%d")
+    except ValueError:
+        raise ValueError(f"unparseable scryfall stamp {text!r}") from None
 
 
 def release_id(path: Path) -> dict[str, str]:
@@ -69,6 +76,12 @@ def release_id(path: Path) -> dict[str, str]:
             raise ValueError(f"corpus meta is missing {key}")
     cr = _cr_stamp(meta["cr_effective_date"])
     sf = _scryfall_stamp(meta["scryfall_updated_at"])
+    # Rulings move independently of Oracle text, so a tag that omits them
+    # cannot distinguish a rulings-only rebuild from the build before it —
+    # which meant the rebuild either skipped as already-done or collided with
+    # an existing asset and was refused. Older corpora predate this field.
+    rl = meta.get("scryfall_rulings_updated_at")
+    rl_part = f"-r{_scryfall_stamp(rl)}" if rl and rl != "unknown" else ""
     # An Italian-alias build is a DIFFERENT corpus from the same upstream
     # data, so it needs its own release. Without this, dispatching with
     # aliases against an otherwise-current release reported "nothing to do"
@@ -80,9 +93,15 @@ def release_id(path: Path) -> dict[str, str]:
         aliases = 0
     finally:
         con.close()
-    suffix = "-it" if aliases else ""
+    # An alias build's identity includes the all_cards snapshot it used;
+    # without it two Italian builds from different card dumps look identical.
+    ac = meta.get("scryfall_all_cards_updated_at")
+    if aliases and ac and ac != "unknown":
+        suffix = f"-it{_scryfall_stamp(ac)}"
+    else:
+        suffix = "-it" if aliases else ""
     return {
-        "tag": f"cr-{cr}-cards-{sf}{suffix}",
+        "tag": f"cr-{cr}-cards-{sf}{rl_part}{suffix}",
         "aliases": str(aliases),
         "cr": cr,
         "cards": sf,

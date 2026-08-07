@@ -31,7 +31,14 @@ class StampError(Exception):
 # dataset, and the only symptom is staleness nobody notices.
 WATCHED = ("oracle_cards", "rulings")
 
-_ISO = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+# FULLMATCH, and anchored at both ends. A prefix match accepted
+# "2026-08-07T09:03:15; <anything>" — a value that arrives from a third-party
+# API and was, until this was caught, evaluated by the workflow shell holding
+# contents: write. Validation that only checks the beginning of a string is
+# not validation.
+_ISO = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?"
+    r"(?:Z|[+-]\d{2}:?\d{2})?")
 
 
 def extract(payload: dict, kind: str = "oracle_cards") -> str:
@@ -45,7 +52,7 @@ def extract(payload: dict, kind: str = "oracle_cards") -> str:
             # Not just truthiness. A blank or malformed value used to pass
             # through and then match a substring of almost any release body,
             # turning the change check into a permanent false "nothing new".
-            if not isinstance(stamp, str) or not _ISO.match(stamp.strip()):
+            if not isinstance(stamp, str) or not _ISO.fullmatch(stamp.strip()):
                 raise StampError(
                     f"{kind} updated_at is not an ISO timestamp: {stamp!r}")
             return stamp.strip()
@@ -80,8 +87,11 @@ def main() -> int:
     if args.kind:
         print(stamps[args.kind])
     else:
+        # Plain values, one per line, in WATCHED order. Deliberately NOT
+        # `name=value` for a shell to eval: the workflow reads these
+        # positionally instead, so nothing here is ever executed.
         for kind in WATCHED:
-            print(f"{kind}={stamps[kind]}")
+            print(stamps[kind])
     return 0
 
 

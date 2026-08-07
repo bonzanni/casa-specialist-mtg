@@ -141,7 +141,7 @@ def test_the_tag_distinguishes_a_cards_only_rebuild(tmp_path):
         con.close()
 
     assert release_id(a)["tag"] != release_id(b)["tag"]
-    assert release_id(a)["tag"] == "cr-20260619-cards-20260807"
+    assert release_id(a)["tag"] == "cr-20260619-cards-20260807T090315"
 
 
 def test_the_release_id_comes_from_the_corpus_not_a_fresh_lookup(tmp_path):
@@ -158,7 +158,7 @@ def test_the_release_id_comes_from_the_corpus_not_a_fresh_lookup(tmp_path):
     con.close()
     info = release_id(path)
     assert info["cr_effective_date"] == "August 7, 2026"
-    assert info["tag"] == "cr-20260807-cards-20260807"
+    assert info["tag"] == "cr-20260807-cards-20260807T090315"
 
 
 @pytest.mark.parametrize("effective", ["unknown", "", "sometime in June"])
@@ -253,4 +253,117 @@ def test_an_empty_search_index_is_refused(tmp_path):
     con.commit()
     con.close()
     found = problems(path)
-    assert any("cards_fts is empty" in p for p in found), found
+    assert any("cards_fts holds 0 rows" in p for p in found), found
+
+
+def test_two_snapshots_on_one_day_do_not_collide(tmp_path):
+    """Truncating the card stamp to a date meant two snapshots published on one
+    UTC day — which happens — shared a tag: the second either skipped as
+    already-done or collided with an existing asset and was refused. Identity
+    must be at least as precise as the thing it identifies."""
+    from corpus_release_id import release_id
+
+    tags = set()
+    for n, stamp in enumerate(("2026-08-07T09:03:15.937+00:00",
+                               "2026-08-07T18:41:02.004+00:00")):
+        path = _corpus(tmp_path / f"c{n}.sqlite")
+        con = sqlite3.connect(path)
+        con.execute("INSERT INTO meta VALUES ('scryfall_updated_at', ?)", (stamp,))
+        con.commit()
+        con.close()
+        tags.add(release_id(path)["tag"])
+    assert len(tags) == 2, tags
+
+
+def test_a_rulings_only_rebuild_gets_its_own_tag(tmp_path):
+    """Rulings move independently of Oracle text. A tag omitting them could not
+    distinguish the rebuild from the build before it, so it skipped as
+    already-done — or, when forced, collided and was refused."""
+    from corpus_release_id import release_id
+
+    tags = []
+    for n, rulings in enumerate(("2026-08-07T09:00:36.125+00:00",
+                                 "2026-08-14T09:00:36.125+00:00")):
+        path = _corpus(tmp_path / f"r{n}.sqlite")
+        con = sqlite3.connect(path)
+        con.execute("INSERT INTO meta VALUES ('scryfall_updated_at', ?)",
+                    ("2026-08-07T09:03:15.937+00:00",))
+        con.execute("INSERT INTO meta VALUES ('scryfall_rulings_updated_at', ?)",
+                    (rulings,))
+        con.commit()
+        con.close()
+        tags.append(release_id(path)["tag"])
+    assert tags[0] != tags[1], tags
+
+
+def test_a_corpus_predating_the_rulings_field_still_names_a_release(tmp_path):
+    """Older corpora have no scryfall_rulings_updated_at. Refusing them would
+    strand exactly the artefacts this change was meant to keep working."""
+    from corpus_release_id import release_id
+
+    path = _corpus(tmp_path / "old.sqlite")
+    con = sqlite3.connect(path)
+    con.execute("INSERT INTO meta VALUES ('scryfall_updated_at', ?)",
+                ("2026-08-07T09:03:15.937+00:00",))
+    con.commit()
+    con.close()
+    assert release_id(path)["tag"].startswith("cr-20260619-cards-20260807T")
+
+
+def test_an_italian_build_records_the_card_dump_it_used(tmp_path):
+    """Aliases come from all_cards, which updates on its own schedule. Two
+    Italian builds from different dumps looked identical without it."""
+    from corpus_release_id import release_id
+
+    tags = []
+    for n, ac in enumerate(("2026-08-07T09:03:15.937+00:00",
+                            "2026-08-20T09:03:15.937+00:00")):
+        path = _corpus(tmp_path / f"it{n}.sqlite")
+        con = sqlite3.connect(path)
+        con.execute("INSERT INTO meta VALUES ('scryfall_updated_at', ?)",
+                    ("2026-08-07T09:03:15.937+00:00",))
+        con.execute("INSERT INTO meta VALUES ('scryfall_all_cards_updated_at', ?)",
+                    (ac,))
+        con.execute("CREATE TABLE card_aliases(printed_lower, lang, oracle_id)")
+        con.execute("INSERT INTO card_aliases VALUES ('x','it','1')")
+        con.commit()
+        con.close()
+        tags.append(release_id(path)["tag"])
+    assert tags[0] != tags[1], tags
+
+
+def test_a_barely_populated_search_index_is_refused(tmp_path):
+    """One row passed a "not empty" check while almost every lookup failed —
+    the same shape as accepting a corpus because it has rows."""
+    path = _corpus(tmp_path / "c.sqlite")
+    con = sqlite3.connect(path)
+    con.execute("DELETE FROM cards_fts")
+    con.execute("INSERT INTO cards_fts VALUES ('one', '1')")
+    con.commit()
+    con.close()
+    found = problems(path)
+    assert any("cards_fts holds 1 rows" in p for p in found), found
+
+
+def test_half_the_cards_missing_names_is_refused(tmp_path):
+    """A blanket half-tolerance let 15,000 nameless cards through. Names are
+    how cards are found; the tolerance for them is near zero."""
+    path = _corpus(tmp_path / "c.sqlite")
+    con = sqlite3.connect(path)
+    con.execute("UPDATE cards SET name = '' WHERE CAST(oracle_id AS INTEGER) % 2 = 0")
+    con.commit()
+    con.close()
+    found = problems(path)
+    assert any("cards.name" in p for p in found), found
+
+
+def test_cards_without_rules_text_are_tolerated(tmp_path):
+    """Plenty of real cards have no rules text — vanilla creatures, basic
+    lands. A tolerance that forbade them would reject every real corpus."""
+    path = _corpus(tmp_path / "c.sqlite")
+    con = sqlite3.connect(path)
+    con.execute("UPDATE cards SET oracle_text = '' "
+                "WHERE CAST(oracle_id AS INTEGER) % 5 = 0")
+    con.commit()
+    con.close()
+    assert not any("oracle_text" in p for p in problems(path))

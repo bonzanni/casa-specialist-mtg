@@ -144,7 +144,7 @@ def _it_alias_rows(card: dict, seen: set[tuple[str, str]]) -> list[tuple[str, st
     return rows
 
 
-def _scryfall_updated_at(bulk_meta_path: Path | None) -> str:
+def _scryfall_updated_at(bulk_meta_path: Path | None, kind: str = "oracle_cards") -> str:
     """The real Scryfall bulk-data timestamp for oracle_cards when
     plugins/mtg/data/bulk_meta.json (written by main()) is available; falls
     back to the build date, with a printed warning, when the file is absent
@@ -153,7 +153,7 @@ def _scryfall_updated_at(bulk_meta_path: Path | None) -> str:
         try:
             meta = json.loads(bulk_meta_path.read_text(encoding="utf-8"))
             for entry in meta.get("data", []):
-                if entry.get("type") == "oracle_cards" and entry.get("updated_at"):
+                if entry.get("type") == kind and entry.get("updated_at"):
                     return entry["updated_at"]
         except (json.JSONDecodeError, OSError) as exc:
             print(f"warning: could not read {bulk_meta_path}: {exc}; "
@@ -246,6 +246,17 @@ def build(cr_path: Path, oracle_path: Path, rulings_path: Path,
     db.execute("INSERT INTO meta VALUES ('cr_effective_date', ?)", (cr_date,))
     db.execute("INSERT INTO meta VALUES ('scryfall_updated_at', ?)",
                (_scryfall_updated_at(bulk_meta_path),))
+    # Rulings update independently of Oracle text. Recording the snapshot the
+    # corpus was actually built from is what lets a release be named for its
+    # real inputs rather than for a subset of them.
+    db.execute("INSERT INTO meta VALUES ('scryfall_rulings_updated_at', ?)",
+               (_scryfall_updated_at(bulk_meta_path, "rulings"),))
+    if all_cards_path is not None and all_cards_path.exists():
+        # The Italian aliases come from all_cards, which updates on its own
+        # schedule. A build that used it depends on it, so its snapshot
+        # belongs in the corpus's provenance and therefore in its identity.
+        db.execute("INSERT INTO meta VALUES ('scryfall_all_cards_updated_at', ?)",
+                   (_scryfall_updated_at(bulk_meta_path, "all_cards"),))
     db.execute("INSERT INTO meta VALUES ('built_at', ?)",
                (time.strftime("%Y-%m-%dT%H:%M:%S"),))
     db.execute("INSERT INTO meta VALUES ('plugin_version', ?)",
