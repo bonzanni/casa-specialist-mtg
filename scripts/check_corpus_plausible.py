@@ -78,8 +78,12 @@ def problems(path: Path) -> list[str]:
             # the cards having no name passed the earlier check while the
             # corpus was unusable; meanwhile plenty of real cards legitimately
             # have no rules text, so that one has to stay loose.
-            limit = {"name": 0.01, "oracle_text": 0.60, "comment": 0.05}[column]
-            if total and blank > total * limit:
+            # Set against MEASURED reality (0% nameless, 2% textless, 0%
+            # empty rulings), with room for a set release, not at some round
+            # number that happens to admit thousands of unusable rows. 60%
+            # textless "passed" while 21,000 cards had no rules text.
+            limit = {"name": 0.001, "oracle_text": 0.10, "comment": 0.01}[column]
+            if total and blank >= total * limit:
                 found.append(
                     f"{table}.{column}: {blank} of {total} rows are empty "
                     f"(over the {limit:.0%} tolerance)")
@@ -94,10 +98,14 @@ def problems(path: Path) -> list[str]:
             except sqlite3.Error as exc:
                 found.append(f"{fts}: unreadable ({exc}) — search would fail")
                 continue
-            if b and n < b // 2:
+            # Near-complete, not merely half. Half an index means half of all
+            # searches fail — a corpus that answers most questions with a
+            # confident "no rules match", which is the worst outcome this
+            # component has.
+            if b and n < b * 0.9:
                 found.append(
-                    f"{fts} holds {n} rows for {b} in {base}; most searches "
-                    "would find nothing")
+                    f"{fts} holds {n} rows for {b} in {base}; searches would "
+                    "miss a large share of the corpus")
 
         # Subrules are the shape that breaks first when the parser drifts.
         subrules = con.execute(

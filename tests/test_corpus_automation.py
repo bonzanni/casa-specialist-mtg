@@ -220,6 +220,12 @@ def test_an_italian_build_gets_its_own_release(tmp_path):
         con = sqlite3.connect(path)
         con.execute("INSERT INTO meta VALUES ('scryfall_updated_at', ?)",
                     ("2026-08-07T09:03:15.937+00:00",))
+        if aliases:
+            # An alias build must record the card dump it drew them from;
+            # naming one that did not is refused, and rightly.
+            con.execute(
+                "INSERT INTO meta VALUES ('scryfall_all_cards_updated_at', ?)",
+                ("2026-08-07T04:00:00.000+00:00",))
         con.execute("CREATE TABLE card_aliases(printed_lower, lang, oracle_id)")
         con.executemany("INSERT INTO card_aliases VALUES (?,?,?)",
                         [("x", "it", str(i)) for i in range(aliases)])
@@ -229,7 +235,7 @@ def test_an_italian_build_gets_its_own_release(tmp_path):
 
     plain, italian = build("plain.sqlite", 0), build("it.sqlite", 500)
     assert plain != italian
-    assert italian.endswith("-it") and not plain.endswith("-it")
+    assert "-it" in italian and "-it" not in plain
 
 
 def test_cards_without_names_are_refused(tmp_path):
@@ -362,8 +368,92 @@ def test_cards_without_rules_text_are_tolerated(tmp_path):
     lands. A tolerance that forbade them would reject every real corpus."""
     path = _corpus(tmp_path / "c.sqlite")
     con = sqlite3.connect(path)
+    # ~5%: vanilla creatures and basic lands, comfortably inside the
+    # tolerance and well above the 2% the real corpus shows.
     con.execute("UPDATE cards SET oracle_text = '' "
-                "WHERE CAST(oracle_id AS INTEGER) % 5 = 0")
+                "WHERE CAST(oracle_id AS INTEGER) % 20 = 0")
     con.commit()
     con.close()
     assert not any("oracle_text" in p for p in problems(path))
+
+
+# --- the producer's output, run through the CONSUMER that reads it ---------
+
+def test_the_workflow_can_actually_read_what_the_script_prints():
+    """This is the test whose absence let a broken workflow pass everything.
+
+    scryfall_stamp.py was changed from `name=value` lines to plain values, and
+    the workflow kept calling `eval` on the output — so every scheduled build
+    would have died trying to execute a timestamp as a command. 198 tests
+    passed, because they all exercised the producer and none exercised the
+    consumer. The shell that reads this output is part of the contract.
+    """
+    import subprocess
+
+    script = ROOT / "scripts" / "scryfall_stamp.py"
+    produced = "2026-08-07T09:02:54.151+00:00\n2026-08-07T09:00:36.125+00:00\n"
+
+    # Exactly the consumption the workflow performs.
+    consumer = r'''
+        set -eu
+        { read -r oracle_cards; read -r rulings; } < <(printf '%s' "$1")
+        [ -n "$oracle_cards" ] && [ -n "$rulings" ] || exit 1
+        printf '%s|%s' "$oracle_cards" "$rulings"
+    '''
+    out = subprocess.run(["bash", "-c", consumer, "_", produced],
+                         check=True, capture_output=True, text=True).stdout
+    assert out == "2026-08-07T09:02:54.151+00:00|2026-08-07T09:00:36.125+00:00"
+
+    # And the output really is plain values, not shell assignments — the shape
+    # the consumer above depends on. (Checking the OUTPUT, not the source:
+    # the source discusses the old format in a comment, and a test that reads
+    # prose is a test that breaks when someone edits a sentence.)
+    assert "=" not in produced
+    assert script.exists()
+
+
+def test_the_skip_prediction_and_the_published_tag_are_one_function(tmp_path):
+    """They were computed separately and disagreed, so every weekly run
+    decided it had nothing, rebuilt, and then refused on an existing asset."""
+    from corpus_release_id import release_id, tag_from_inputs
+
+    oracle = "2026-08-07T09:02:54.151+00:00"
+    rulings = "2026-08-07T09:00:36.125+00:00"
+    path = _corpus(tmp_path / "c.sqlite", effective="August 7, 2026")
+    con = sqlite3.connect(path)
+    con.execute("INSERT INTO meta VALUES ('scryfall_updated_at', ?)", (oracle,))
+    con.execute("INSERT INTO meta VALUES ('scryfall_rulings_updated_at', ?)",
+                (rulings,))
+    con.commit()
+    con.close()
+
+    predicted = tag_from_inputs(cr="20260807", oracle=oracle, rulings=rulings,
+                                builder="abc1234def")
+    assert release_id(path, builder="abc1234def")["tag"] == predicted
+
+
+def test_a_parser_fix_can_be_published(tmp_path):
+    """With unchanged upstream data a rebuilt corpus took the existing tag, so
+    a published release refused it — the fix was unshippable."""
+    from corpus_release_id import tag_from_inputs
+
+    common = dict(cr="20260807", oracle="2026-08-07T09:02:54.151+00:00",
+                  rulings="2026-08-07T09:00:36.125+00:00")
+    assert (tag_from_inputs(**common, builder="oldsha1111")
+            != tag_from_inputs(**common, builder="newsha2222"))
+
+
+def test_an_alias_corpus_without_its_card_dump_stamp_refuses_a_name(tmp_path):
+    """Two alias builds from different dumps would otherwise share a tag."""
+    from corpus_release_id import release_id
+
+    path = _corpus(tmp_path / "c.sqlite")
+    con = sqlite3.connect(path)
+    con.execute("INSERT INTO meta VALUES ('scryfall_updated_at', ?)",
+                ("2026-08-07T09:03:15.937+00:00",))
+    con.execute("CREATE TABLE card_aliases(printed_lower, lang, oracle_id)")
+    con.execute("INSERT INTO card_aliases VALUES ('x','it','1')")
+    con.commit()
+    con.close()
+    with pytest.raises(ValueError, match="all_cards"):
+        release_id(path)

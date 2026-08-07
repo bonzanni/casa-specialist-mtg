@@ -29,7 +29,11 @@ class StampError(Exception):
 # Every dataset the builder consumes. Missing any one of them is a refusal:
 # a stamp that silently disappears would freeze change detection on that
 # dataset, and the only symptom is staleness nobody notices.
+# all_cards is only consumed by an Italian-alias build, so it is watched but
+# not required: demanding it would fail every ordinary run, and omitting it
+# entirely left two alias builds from different card dumps indistinguishable.
 WATCHED = ("oracle_cards", "rulings")
+OPTIONAL = ("all_cards",)
 
 # FULLMATCH, and anchored at both ends. A prefix match accepted
 # "2026-08-07T09:03:15; <anything>" — a value that arrives from a third-party
@@ -66,7 +70,7 @@ def extract_all(payload: dict) -> dict[str, str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--kind", choices=WATCHED,
+    ap.add_argument("--kind", choices=WATCHED + OPTIONAL,
                     help="print one dataset's stamp instead of all of them")
     args = ap.parse_args()
     request = urllib.request.Request(BULK_DATA, headers=UA)
@@ -85,7 +89,14 @@ def main() -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     if args.kind:
-        print(stamps[args.kind])
+        if args.kind in OPTIONAL:
+            try:
+                print(extract(payload, args.kind))
+            except StampError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+        else:
+            print(stamps[args.kind])
     else:
         # Plain values, one per line, in WATCHED order. Deliberately NOT
         # `name=value` for a shell to eval: the workflow reads these

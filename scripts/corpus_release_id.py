@@ -65,46 +65,80 @@ def _scryfall_stamp(updated_at: str) -> str:
         raise ValueError(f"unparseable scryfall stamp {text!r}") from None
 
 
-def release_id(path: Path) -> dict[str, str]:
+def tag_from_inputs(*, cr: str, oracle: str, rulings: str | None = None,
+                    all_cards: str | None = None,
+                    builder: str | None = None) -> str:
+    """The release tag, from values known BEFORE a build.
+
+    The skip check and the publish step must agree on the tag or the
+    automation eats itself: predicting a different string than it later
+    publishes means every run decides it has nothing, rebuilds, and then
+    refuses on an existing asset. One function, used by both.
+
+    `builder` is the revision of the build code. A parser fix with unchanged
+    upstream data produces a DIFFERENT corpus from the same inputs, so
+    without it there was no tag under which that corpus could ever be
+    published — the fix was unshippable.
+    """
+    parts = [f"cr-{cr}", f"cards-{_scryfall_stamp(oracle)}"]
+    if rulings:
+        parts.append(f"r{_scryfall_stamp(rulings)}")
+    if all_cards:
+        parts.append(f"it{_scryfall_stamp(all_cards)}")
+    if builder:
+        parts.append(f"b{builder[:7]}")
+    return "-".join(parts)
+
+
+def release_id(path: Path, builder: str | None = None) -> dict[str, str]:
+    """Name a release for a corpus that has already been built.
+
+    Used to VERIFY that what came out of the build is what the workflow
+    planned to publish; the tag itself is computed from inputs before the
+    build, by tag_from_inputs, so the prediction and the publication cannot
+    disagree.
+    """
     con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
         meta = dict(con.execute("SELECT key, value FROM meta"))
+        try:
+            aliases = con.execute(
+                "SELECT count(*) FROM card_aliases").fetchone()[0]
+        except sqlite3.Error:
+            aliases = 0
     finally:
         con.close()
+
     for key in ("cr_effective_date", "scryfall_updated_at"):
         if not meta.get(key) or meta[key] == "unknown":
             raise ValueError(f"corpus meta is missing {key}")
+
+    def _present(key: str) -> str | None:
+        value = meta.get(key)
+        return value if value and value != "unknown" else None
+
     cr = _cr_stamp(meta["cr_effective_date"])
-    sf = _scryfall_stamp(meta["scryfall_updated_at"])
-    # Rulings move independently of Oracle text, so a tag that omits them
-    # cannot distinguish a rulings-only rebuild from the build before it —
-    # which meant the rebuild either skipped as already-done or collided with
-    # an existing asset and was refused. Older corpora predate this field.
-    rl = meta.get("scryfall_rulings_updated_at")
-    rl_part = f"-r{_scryfall_stamp(rl)}" if rl and rl != "unknown" else ""
-    # An Italian-alias build is a DIFFERENT corpus from the same upstream
-    # data, so it needs its own release. Without this, dispatching with
-    # aliases against an otherwise-current release reported "nothing to do"
-    # and quietly never produced the thing that was asked for.
-    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    try:
-        aliases = con.execute("SELECT count(*) FROM card_aliases").fetchone()[0]
-    except sqlite3.Error:
-        aliases = 0
-    finally:
-        con.close()
-    # An alias build's identity includes the all_cards snapshot it used;
-    # without it two Italian builds from different card dumps look identical.
-    ac = meta.get("scryfall_all_cards_updated_at")
-    if aliases and ac and ac != "unknown":
-        suffix = f"-it{_scryfall_stamp(ac)}"
-    else:
-        suffix = "-it" if aliases else ""
+    # Rulings move independently of Oracle text; a tag omitting them cannot
+    # tell a rulings-only rebuild from the build before it.
+    rulings = _present("scryfall_rulings_updated_at")
+    all_cards = _present("scryfall_all_cards_updated_at")
+
+    if aliases and not all_cards:
+        # Aliases come from all_cards. Without its snapshot, two alias builds
+        # from different card dumps would claim the same tag — so refuse to
+        # name it rather than mint an identity that is not one.
+        raise ValueError(
+            "alias corpus has no scryfall_all_cards_updated_at; cannot name "
+            "a release that another alias build could not also claim")
+
     return {
-        "tag": f"cr-{cr}-cards-{sf}{rl_part}{suffix}",
+        "tag": tag_from_inputs(cr=cr, oracle=meta["scryfall_updated_at"],
+                               rulings=rulings,
+                               all_cards=all_cards if aliases else None,
+                               builder=builder),
         "aliases": str(aliases),
         "cr": cr,
-        "cards": sf,
+        "cards": _scryfall_stamp(meta["scryfall_updated_at"]),
         "cr_effective_date": meta["cr_effective_date"],
         "scryfall_updated_at": meta["scryfall_updated_at"],
     }
@@ -112,11 +146,43 @@ def release_id(path: Path) -> dict[str, str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("corpus")
+    ap.add_argument("corpus", nargs="?",
+                    help="a built corpus; omit with --from-inputs")
+    ap.add_argument("--from-inputs", action="store_true",
+                    help="compute the tag from upstream stamps known BEFORE "
+                         "a build, so the skip check and the publish step "
+                         "cannot disagree about what this release is called")
+    ap.add_argument("--cr", help="CR effective date, YYYYMMDD")
+    ap.add_argument("--oracle", help="oracle_cards updated_at")
+    ap.add_argument("--rulings", help="rulings updated_at")
+    ap.add_argument("--all-cards", dest="all_cards",
+                    help="all_cards updated_at (Italian-alias builds only)")
     ap.add_argument("--field", default="tag")
+    ap.add_argument("--builder", help="revision of the build code; a parser "
+                                      "change makes a different corpus")
     args = ap.parse_args()
+
+    if args.from_inputs:
+        if not args.cr or not args.oracle:
+            print("error: --from-inputs needs --cr and --oracle",
+                  file=sys.stderr)
+            return 1
+        try:
+            print(tag_from_inputs(cr=args.cr, oracle=args.oracle,
+                                  rulings=args.rulings,
+                                  all_cards=args.all_cards,
+                                  builder=args.builder))
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
+    if not args.corpus:
+        print("error: give a corpus path, or use --from-inputs",
+              file=sys.stderr)
+        return 1
     try:
-        info = release_id(Path(args.corpus))
+        info = release_id(Path(args.corpus), builder=args.builder)
     except (sqlite3.Error, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
