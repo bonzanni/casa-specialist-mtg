@@ -14,6 +14,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
+import pathlib  # noqa: E402
 from check_corpus_plausible import FLOORS, problems  # noqa: E402
 from scryfall_stamp import StampError, extract  # noqa: E402
 
@@ -379,17 +380,20 @@ def test_cards_without_rules_text_are_tolerated(tmp_path):
 
 # --- the producer's output, run through the CONSUMER that reads it ---------
 
-def test_the_workflow_can_actually_read_what_the_script_prints():
-    """This is the test whose absence let a broken workflow pass everything.
+CONSUMER = ROOT / "tests" / "fixtures" / "workflow_consumer.sh"
 
-    scryfall_stamp.py was changed from `name=value` lines to plain values, the
-    workflow kept calling `eval` on the output, and every scheduled build would
-    have died executing a timestamp as a command. Two hundred tests passed,
-    because they all exercised the producer and none exercised the consumer.
 
-    So this runs the REAL formatter — not a hard-coded copy of what it used to
-    emit — through the shell fragment the workflow really uses. If either side
-    changes shape without the other, this fails here rather than on a Monday.
+def test_the_canonical_consumer_reads_what_the_producer_prints():
+    """The regression test for the bug that slipped past two hundred tests.
+
+    The producer's output format changed while its consumer kept calling eval,
+    and every scheduled build would have died executing a timestamp. The first
+    version of this test fed a hard-coded string to a transcribed shell
+    fragment — proving only that the copy matched the copy. The second read the
+    private workflow, which does not exist in the public repository or its CI,
+    so it silently skipped exactly where it needed to run.
+
+    So the contract lives HERE, next to the producer, and is always executed.
     """
     import subprocess
 
@@ -399,30 +403,54 @@ def test_the_workflow_can_actually_read_what_the_script_prints():
               "rulings": "2026-08-07T09:00:36.125+00:00"}
     produced = format_output(stamps)
 
+    # Line ORDER is the contract: the consumer reads positionally.
+    assert produced.splitlines() == [stamps[k] for k in WATCHED]
+    assert "=" not in produced, "plain values, never shell assignments"
+
+    # Run the canonical snippet with the producer's real output, then check it
+    # bound the values the right way round. Through a FILE: interpolating the
+    # bytes into the script escaped the newlines, and the consumer then read
+    # one line and hung on the second — a harness bug that would have read as
+    # a contract failure.
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        stamp_file = pathlib.Path(d) / "stamps"
+        stamp_file.write_text(produced)
+        body = CONSUMER.read_text().replace(
+            "python3 scripts/scryfall_stamp.py", f"cat {stamp_file}")
+        out = subprocess.run(
+            ["bash", "-c", f"set -euo pipefail\n{body}\n"
+                           'printf "%s|%s" "$oracle_cards" "$rulings"'],
+            check=True, capture_output=True, text=True).stdout
+    assert out == f"{stamps['oracle_cards']}|{stamps['rulings']}"
+
+
+def test_the_private_workflow_still_matches_the_canonical_consumer():
+    """Drift in the other direction. Skipped where the sibling repo is absent,
+    which is fine — the contract above is enforced unconditionally, and this
+    only adds the cross-check when both halves are present."""
     workflow = (ROOT.parent / "casa-mtg-corpus" /
                 ".github" / "workflows" / "build-corpus.yml")
-    if workflow.exists():
-        # An INVOCATION, not the word: the workflow explains in a comment why
-        # it does not eval, and a substring check on "eval" flagged the
-        # explanation. A guard that fires on prose gets deleted by the next
-        # person who hits it.
-        evals = [line for line in workflow.read_text().splitlines()
-                 if line.strip().startswith("eval ") or 'eval "$(' in line]
-        assert not evals, f"the consumer must never eval this output: {evals}"
-        assert "read -r oracle_cards" in workflow.read_text(), (
-            "the consumer's read must match this producer's line order")
+    if not workflow.exists():
+        pytest.skip("private build repository not checked out here")
+    text = workflow.read_text()
 
-    consumer = r"""
-        set -eu
-        { read -r oracle_cards; read -r rulings; } < <(printf '%s' "$1")
-        [ -n "$oracle_cards" ] && [ -n "$rulings" ] || exit 1
-        printf '%s|%s' "$oracle_cards" "$rulings"
-    """
-    out = subprocess.run(["bash", "-c", consumer, "_", produced],
-                         check=True, capture_output=True, text=True).stdout
-    assert out == f"{stamps['oracle_cards']}|{stamps['rulings']}"
-    # Line ORDER is part of the contract: the consumer reads positionally.
-    assert produced.splitlines() == [stamps[k] for k in WATCHED]
+    # An eval INVOCATION, not the word: the workflow explains in a comment why
+    # it does not eval, and a guard that fires on prose gets deleted.
+    evals = [line for line in text.splitlines()
+             if line.strip().startswith("eval ") or 'eval "$(' in line]
+    assert not evals, f"the consumer must never eval this output: {evals}"
+
+    # The READ ORDER, not merely the presence of a read. Swapping the two
+    # lines still satisfies a substring check while binding the stamps the
+    # wrong way round.
+    reads = [line.strip() for line in text.splitlines()
+             if "read -r oracle_cards" in line or "read -r rulings" in line]
+    assert reads, "the workflow no longer consumes the stamps positionally"
+    joined = " ".join(reads)
+    assert joined.index("oracle_cards") < joined.index("rulings"), (
+        "the workflow reads the stamps in the wrong order")
 
 
 def test_the_skip_prediction_and_the_published_tag_are_one_function(tmp_path):
