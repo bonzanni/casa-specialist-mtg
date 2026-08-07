@@ -532,3 +532,54 @@ def test_an_alias_corpus_without_its_card_dump_stamp_refuses_a_name(tmp_path):
     con.close()
     with pytest.raises(ValueError, match="all_cards"):
         release_id(path)
+
+
+# --- the workflows must be valid the way GITHUB reads them -----------------
+
+def _load_strict(path):
+    """Parse YAML rejecting duplicate mapping keys.
+
+    PyYAML accepts them and keeps the last, so `yaml.safe_load` said a
+    workflow with two `steps:` keys was fine while GitHub would refuse to run
+    it at all. Validating with a tool that is more permissive than the
+    consumer is not validating.
+    """
+    import yaml
+
+    class Strict(yaml.SafeLoader):
+        pass
+
+    def no_duplicates(loader, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = loader.construct_object(key_node, deep=deep)
+            if key in seen:
+                raise AssertionError(
+                    f"duplicate key {key!r} at {key_node.start_mark}")
+            seen.add(key)
+        return yaml.SafeLoader.construct_mapping(loader, node, deep)
+
+    Strict.add_constructor(
+        yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, no_duplicates)
+    return yaml.load(path.read_text(), Strict)
+
+
+def test_this_repository_s_workflows_have_no_duplicate_keys():
+    for path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+        doc = _load_strict(path)
+        assert doc, path
+
+
+def test_the_private_build_workflow_has_no_duplicate_keys():
+    """The duplicate `steps:` that escaped came from patching one file across
+    many rounds. It is exactly the kind of damage a lenient parser hides."""
+    workflow = (ROOT.parent / "casa-mtg-corpus" /
+                ".github" / "workflows" / "build-corpus.yml")
+    if not workflow.exists():
+        pytest.skip("private build repository not checked out here")
+    doc = _load_strict(workflow)
+    steps = doc["jobs"]["build"]["steps"]
+    assert steps, "the build job has no steps"
+    # Every step must be reachable as a step, not stranded in a stale block.
+    names = [s.get("name", s.get("uses", "?")) for s in steps]
+    assert len(names) == len(set(names)), f"duplicated steps: {names}"
