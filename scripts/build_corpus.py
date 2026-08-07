@@ -8,8 +8,9 @@ Usage:
 Find the current --cr-url at https://magic.wizards.com/en/rules (the .txt
 link; its filename carries the effective date and changes every release).
 
-Runtime is stdlib-only; this builder additionally needs `ijson` for the
-optional Italian-alias pass. Downloads land in plugins/mtg/data/ and are
+Stdlib only, builder included: Scryfall's move to JSONL means a line is a
+document, so the multi-gigabyte all_cards file streams without ijson.
+Downloads land in plugins/mtg/data/ and are
 gitignored, as is the built corpus: neither the raw rules text nor the
 compiled corpus is redistributed from this repository, and no build of it is
 published anywhere from here.
@@ -34,10 +35,21 @@ _EXAMPLE_RE = re.compile(r"^Example:\s*(.*)$")
 
 
 def _fetch(url: str, dest: Path) -> Path:
+    """Stream a URL to disk, decompressing gzip on the way if it is gzipped.
+
+    Scryfall serves bulk data as `.jsonl.gz`. Streaming through GzipFile keeps
+    the memory profile the same as before while writing plain JSONL, so
+    everything downstream reads one object per line and nothing has to know
+    the transport was compressed.
+    """
+    import gzip
     import shutil
+
     req = urllib.request.Request(url, headers=UA)
-    with urllib.request.urlopen(req, timeout=300) as resp, open(dest, "wb") as fh:
-        shutil.copyfileobj(resp, fh, length=1 << 20)  # streamed, not resp.read()
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        source = gzip.GzipFile(fileobj=resp) if url.endswith(".gz") else resp
+        with open(dest, "wb") as fh:
+            shutil.copyfileobj(source, fh, length=1 << 20)
     time.sleep(0.2)  # Scryfall API courtesy
     return dest
 
@@ -173,8 +185,8 @@ def build(cr_path: Path, oracle_path: Path, rulings_path: Path,
     rules_text, glossary_text, cr_date = split_cr_sections(full)
     rules = parse_cr(rules_text)
     glossary = parse_glossary(glossary_text)
-    oracle = json.loads(oracle_path.read_text(encoding="utf-8"))
-    rulings = json.loads(rulings_path.read_text(encoding="utf-8"))
+    oracle = list(_iter_jsonl(oracle_path))
+    rulings = list(_iter_jsonl(rulings_path))
 
     out.parent.mkdir(parents=True, exist_ok=True)
     if out.exists():
@@ -238,7 +250,7 @@ def build(cr_path: Path, oracle_path: Path, rulings_path: Path,
             r.get("source", ""), r.get("comment", "")))
     if all_cards_path is not None and all_cards_path.exists():
         seen: set[tuple[str, str]] = set()
-        for c in _iter_json_array(all_cards_path):   # streamed, not loaded whole
+        for c in _iter_jsonl(all_cards_path):   # streamed, not loaded whole
             if c.get("layout") == "art_series":
                 continue
             for row in _it_alias_rows(c, seen):
@@ -282,13 +294,24 @@ def _plugin_version() -> str:
     return _j.loads(mani.read_text())["version"]
 
 
-def _iter_json_array(path: Path):
-    """Stream objects from the multi-GB all_cards array with true constant
-    memory. Uses ijson, a BUILD-TIME dependency — only the runtime MCP server
-    must be stdlib-only; the builder may pip-install (scripts/requirements.txt)."""
-    import ijson
-    with open(path, "rb") as fh:
-        yield from ijson.items(fh, "item")
+def _iter_jsonl(path: Path):
+    """Stream objects from a JSONL file, one per line, in constant memory.
+
+    Scryfall moved bulk data from a single JSON array to JSONL, which is why
+    this no longer needs ijson: a line is a document, so the stdlib is enough
+    even for the multi-gigabyte all_cards file. Blank lines are skipped; a
+    malformed line is fatal, because silently dropping cards would produce a
+    corpus that looks fine and answers "not found" for whatever fell out.
+    """
+    with open(path, "r", encoding="utf-8") as fh:
+        for number, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{path}:{number}: malformed JSONL: {exc}") from None
 
 
 def main() -> int:
@@ -310,7 +333,17 @@ def main() -> int:
             urllib.request.Request("https://api.scryfall.com/bulk-data",
                                    headers=UA), timeout=60).read())
         (DATA / "bulk_meta.json").write_text(json.dumps(bulk))
-        uris = {b["type"]: b["download_uri"] for b in bulk["data"]}
+        # Scryfall replaced `download_uri` with `jsonl_download_uri` when it
+        # moved bulk data to JSONL. Fail loudly on the old key rather than
+        # KeyError deep in a comprehension, so the next schema change reads as
+        # a schema change.
+        uris = {}
+        for b in bulk["data"]:
+            if "jsonl_download_uri" not in b:
+                raise SystemExit(
+                    f"bulk entry {b.get('type')!r} has no jsonl_download_uri; "
+                    "Scryfall's bulk-data schema has changed again")
+            uris[b["type"]] = b["jsonl_download_uri"]
         _fetch(uris["oracle_cards"], oracle)
         _fetch(uris["rulings"], rl)
         if args.with_it_aliases:

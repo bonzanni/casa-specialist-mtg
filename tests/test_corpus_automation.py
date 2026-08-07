@@ -754,3 +754,50 @@ def test_only_a_single_line_marker_claims_ownership_of_a_tag():
     # pins the rule, not the implementation. The verbatim-snippet check used
     # for the stamps consumer is the stronger pattern, and this ownership
     # test does not yet use it.
+
+
+def test_a_404_assignment_does_not_kill_the_step_under_the_runner_shell():
+    """The bug the first real run found, which review could not.
+
+    GitHub invokes a step as `bash --noprofile --norc -e -o pipefail`. The
+    script's own `set -uo pipefail` cannot remove that `-e`. So
+    `status=$(gh api ...)` inherits the 404's nonzero exit and the step dies
+    BEFORE the case that was written to interpret it — the cleanup never ran
+    and left a reservation stranded on the very first execution.
+
+    Fourteen review rounds read this shell and missed it, because reading it
+    is not running it under the shell that runs it.
+    """
+    import subprocess
+
+    def run(assignment):
+        script = f'''
+            set -uo pipefail
+            fake() {{ echo "HTTP/2.0 404 Not Found"; return 1; }}
+            {assignment}
+            case "$status" in 404) echo reached-404 ;; *) echo "reached-$status" ;; esac
+        '''
+        # The RUNNER's shell, -e included.
+        return subprocess.run(
+            ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script],
+            capture_output=True, text=True)
+
+    naked = 'status=$(fake | sed -nE "1s@^HTTP/[0-9.]+ ([0-9]{3}).*@\\1@p")'
+    assert run(naked).returncode != 0, (
+        "if this passes, -e no longer propagates and the guard below is moot")
+
+    guarded = naked + " || true"
+    done = run(guarded)
+    assert done.returncode == 0 and done.stdout.strip() == "reached-404"
+
+
+def test_the_workflow_guards_every_status_assignment():
+    workflow = (ROOT.parent / "casa-mtg-corpus" /
+                ".github" / "workflows" / "build-corpus.yml")
+    if not workflow.exists():
+        pytest.skip("private build repository not checked out here")
+    for line in workflow.read_text().splitlines():
+        s = line.strip()
+        if s.startswith(("status=$(gh api", "now=$(gh api")):
+            assert s.endswith(("|| true", "\\")) or "|| now=" in s, (
+                f"unguarded assignment from a gh call that can 404: {s}")

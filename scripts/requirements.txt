@@ -1,1 +1,5 @@
-ijson
+# Intentionally empty.
+#
+# The builder used ijson to stream Scryfall's multi-gigabyte all_cards JSON
+# array. Scryfall now serves JSONL, where a line is a document, so the stdlib
+# is enough — for the builder as well as the runtime server.

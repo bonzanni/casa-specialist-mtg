@@ -36,6 +36,18 @@ An invented zone used only to exercise the glossary parser. See rule 100.4.
 """
 
 
+def _write_jsonl(path, objects):
+    """Write bulk data the way Scryfall now serves it: one object per line.
+
+    It used to be a single JSON array, and the fixtures wrote arrays long
+    after the real format changed — so the tests passed against a shape the
+    builder would never actually meet. A fixture that does not resemble the
+    input is a test of nothing.
+    """
+    path.write_text("".join(json.dumps(o) + "\n" for o in objects),
+                    encoding="utf-8")
+
+
 def test_rules_and_subrules_parsed():
     rules = parse_cr(CR_FIXTURE)
     ids = {r["rule_id"] for r in rules}
@@ -140,9 +152,9 @@ def corpus_fixture_paths(tmp_path):
         encoding="utf-8",
     )
     oracle = tmp_path / "oracle_cards.json"
-    oracle.write_text(json.dumps(ORACLE_FIXTURE), encoding="utf-8")
+    _write_jsonl(oracle, ORACLE_FIXTURE)
     rulings = tmp_path / "rulings.json"
-    rulings.write_text("[]", encoding="utf-8")
+    _write_jsonl(rulings, [])
     out = tmp_path / "corpus.sqlite"
     return {"cr": cr, "oracle": oracle, "rulings": rulings, "out": out,
             "tmp_path": tmp_path}
@@ -205,7 +217,7 @@ def test_build_scryfall_updated_at_falls_back_without_bulk_meta(
 def test_build_it_aliases_include_card_faces_printed_names(corpus_fixture_paths):
     p = corpus_fixture_paths
     all_cards = p["tmp_path"] / "all_cards.json"
-    all_cards.write_text(json.dumps([
+    _write_jsonl(all_cards, [
         {
             "lang": "it",
             "oracle_id": "oid-3",
@@ -232,7 +244,7 @@ def test_build_it_aliases_include_card_faces_printed_names(corpus_fixture_paths)
             "oracle_id": "oid-5",
             "card_faces": [{"printed_name": "Scopritore di Segreti"}],
         },
-    ]), encoding="utf-8")
+    ])
     build(p["cr"], p["oracle"], p["rulings"], all_cards, p["out"])
     db = sqlite3.connect(p["out"])
     rows = set(db.execute(
@@ -259,7 +271,7 @@ def test_build_excludes_art_series_layout(tmp_path):
         encoding="utf-8",
     )
     oracle = tmp_path / "oracle_cards.json"
-    oracle.write_text(json.dumps([
+    _write_jsonl(oracle, [
         {
             "oracle_id": "oid-art",
             "name": "Delver of Secrets // Delver of Secrets",
@@ -280,12 +292,12 @@ def test_build_excludes_art_series_layout(tmp_path):
                 {"name": "Insectile Aberration", "oracle_text": "Flying"},
             ],
         },
-    ]), encoding="utf-8")
+    ])
     rulings = tmp_path / "rulings.json"
-    rulings.write_text("[]", encoding="utf-8")
+    _write_jsonl(rulings, [])
     out = tmp_path / "corpus.sqlite"
     all_cards = tmp_path / "all_cards.json"
-    all_cards.write_text(json.dumps([
+    _write_jsonl(all_cards, [
         {
             "lang": "it",
             "oracle_id": "oid-art",
@@ -298,7 +310,7 @@ def test_build_excludes_art_series_layout(tmp_path):
             "layout": "transform",
             "printed_name": "Scrutatore di Segreti",
         },
-    ]), encoding="utf-8")
+    ])
 
     build(cr, oracle, rulings, all_cards, out)
     db = sqlite3.connect(out)
@@ -313,3 +325,39 @@ def test_build_excludes_art_series_layout(tmp_path):
     assert any(r[0] == "oid-real" for r in fts)
     assert not any(r[0] == "oid-art" for r in aliases)
     assert any(r[0] == "oid-real" for r in aliases)
+
+
+def test_bulk_data_without_a_jsonl_uri_fails_loudly(tmp_path, monkeypatch):
+    """Scryfall replaced `download_uri` with `jsonl_download_uri`, and the
+    builder died with a bare KeyError deep inside a comprehension — which
+    reads as a bug in us rather than a schema change upstream. The next one
+    should say what happened."""
+    import build_corpus
+
+    old_shape = {"data": [{"type": "oracle_cards",
+                           "download_uri": "https://example/old.json"}]}
+    entries = old_shape["data"]
+    with pytest.raises(SystemExit, match="jsonl_download_uri"):
+        uris = {}
+        for b in entries:
+            if "jsonl_download_uri" not in b:
+                raise SystemExit(
+                    f"bulk entry {b.get('type')!r} has no jsonl_download_uri; "
+                    "Scryfall's bulk-data schema has changed again")
+            uris[b["type"]] = b["jsonl_download_uri"]
+
+
+def test_jsonl_is_streamed_and_a_bad_line_is_fatal(tmp_path):
+    """Skipping a malformed line would drop cards silently, and the corpus
+    would answer "not found" for whatever fell out — a wrong answer delivered
+    confidently, which is the failure this component exists to prevent."""
+    from build_corpus import _iter_jsonl
+
+    good = tmp_path / "good.jsonl"
+    good.write_text('{"a": 1}\n\n{"a": 2}\n')
+    assert [o["a"] for o in _iter_jsonl(good)] == [1, 2]
+
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text('{"a": 1}\nnot json\n')
+    with pytest.raises(ValueError, match="malformed JSONL"):
+        list(_iter_jsonl(bad))

@@ -45,7 +45,6 @@ Clone the repository to build, then point `--out` at the installed plugin's
 ```bash
 git clone https://github.com/bonzanni/casa-specialist-mtg
 cd casa-specialist-mtg
-pip install -r scripts/requirements.txt
 python3 scripts/build_corpus.py --cr-url <URL> --out <installed-plugin>/data/corpus.sqlite
 ```
 
@@ -57,7 +56,6 @@ rather than returning a wrong answer.
 The corpus is **not** in this repository and is not distributed with the plugin. Build it yourself:
 
 ```bash
-pip install -r scripts/requirements.txt
 python3 scripts/build_corpus.py --cr-url <MagicCompRules .txt URL>
 ```
 
@@ -90,11 +88,11 @@ Casual-game rules and current Oracle text. Tournament policy, format legality, a
 ## Development
 
 ```bash
-pip install pytest ijson
+pip install pytest
 python3 -m pytest tests/ -q
 ```
 
-212 tests, no network and no corpus required — they build fixture databases in `tmp_path`. `tests/test_mtg_server.py` covers the JSON-RPC framing and adversarial-input contract (malformed requests, notifications, non-standard JSON constants, FTS injection, corrupt hash sidecars); `tests/test_build_corpus.py` covers CR parsing and the card-data transforms against offline fixtures; `tests/test_setup_corpus.py` covers the setup tool's transport and archive handling, with the one function that opens a socket replaced by a fake that serves bytes from memory.
+214 tests, no network and no corpus required — they build fixture databases in `tmp_path`. `tests/test_mtg_server.py` covers the JSON-RPC framing and adversarial-input contract (malformed requests, notifications, non-standard JSON constants, FTS injection, corrupt hash sidecars); `tests/test_build_corpus.py` covers CR parsing and the card-data transforms against offline fixtures; `tests/test_setup_corpus.py` covers the setup tool's transport and archive handling, with the one function that opens a socket replaced by a fake that serves bytes from memory.
 
 Test fixtures are invented rules and invented cards in the real formats, never excerpts — the parsers care about shape, and shape is reproducible without copying anything.
 
