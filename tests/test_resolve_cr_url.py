@@ -74,3 +74,40 @@ def test_a_lookalike_host_is_not_matched():
             'MagicCompRules%2020260807.txt">x</a>')
     with pytest.raises(ResolveError):
         resolve(html)
+
+
+def test_a_link_only_in_a_script_block_is_not_used():
+    """A raw regex over the response also matches URLs in scripts, comments
+    and embedded state. If the page ever renders the current link dynamically
+    while an archived one survives in a script, scanning raw text would return
+    the OLD url — valid, downloadable, stale — and the corpus built from it
+    would look healthy while citing superseded rules."""
+    html = ('<script>var old = "https://media.wizards.com/2026/downloads/'
+            'MagicCompRules%2020260101.txt";</script>'
+            '<p>The rules are being updated.</p>')
+    with pytest.raises(ResolveError, match="no Comprehensive Rules"):
+        resolve(html)
+
+
+def test_a_link_only_in_a_comment_is_not_used():
+    html = ('<!-- https://media.wizards.com/2026/downloads/'
+            'MagicCompRules%2020260101.txt -->')
+    with pytest.raises(ResolveError, match="no Comprehensive Rules"):
+        resolve(html)
+
+
+def test_a_stale_link_in_a_script_does_not_shadow_the_real_anchor():
+    """The dangerous case is not refusing — it is choosing the wrong one."""
+    html = ('<script>var old="https://media.wizards.com/2026/downloads/'
+            'MagicCompRules%2020260101.txt";</script>'
+            f'<a href="{LINK}">Comprehensive Rules (txt)</a>')
+    url, date = resolve(html)
+    assert date == "20260807"
+
+
+def test_a_href_with_trailing_text_is_not_matched():
+    """fullmatch, not search: an href that merely contains the pattern is not
+    the rules file."""
+    html = f'<a href="{LINK}?utm_source=x&amp;redirect=evil">x</a>'
+    with pytest.raises(ResolveError):
+        resolve(html)

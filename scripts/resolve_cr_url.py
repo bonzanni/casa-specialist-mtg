@@ -28,6 +28,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
+from html.parser import HTMLParser
 
 RULES_PAGE = "https://magic.wizards.com/en/rules"
 UA = {"User-Agent": "casa-mtg-corpus-builder/1.0", "Accept": "text/html"}
@@ -46,6 +47,36 @@ class ResolveError(Exception):
     """Refusal, with a reason the operator can act on."""
 
 
+class _LinkHarvester(HTMLParser):
+    """Collect href values from real anchors only.
+
+    A regex over the whole response also matches URLs inside <script> blocks,
+    HTML comments, embedded JSON state and example text. If the page ever
+    renders the current link dynamically while an archived one survives in any
+    of those, a raw scan would return the OLD url — valid, downloadable, and
+    stale — and the corpus built from it would look perfectly healthy while
+    citing superseded rules. Anchors are what a reader can actually follow.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.hrefs: list[str] = []
+        self._muted = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style", "template"):
+            self._muted += 1
+            return
+        if tag == "a" and not self._muted:
+            for name, value in attrs:
+                if name.lower() == "href" and value:
+                    self.hrefs.append(value)
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style", "template") and self._muted:
+            self._muted -= 1
+
+
 def _fetch(url: str = RULES_PAGE) -> str:
     request = urllib.request.Request(url, headers=UA)
     try:
@@ -59,7 +90,16 @@ def _fetch(url: str = RULES_PAGE) -> str:
 
 def resolve(html: str) -> tuple[str, str]:
     """Return (url, YYYYMMDD) for the single CR .txt link on the page."""
-    found = {m.group(1): m.group(0) for m in _CR_LINK.finditer(html)}
+    harvester = _LinkHarvester()
+    try:
+        harvester.feed(html)
+    except Exception:  # noqa: BLE001 — malformed markup: treat as no links
+        pass
+    found = {}
+    for href in harvester.hrefs:
+        m = _CR_LINK.fullmatch(href.strip())
+        if m:
+            found[m.group(1)] = m.group(0)
     if not found:
         raise ResolveError(
             "no Comprehensive Rules .txt link found. The page layout has "

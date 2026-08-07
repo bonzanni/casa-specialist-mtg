@@ -109,3 +109,64 @@ def test_the_stamp_is_what_the_real_api_shape_provides():
                         '"type":"oracle_cards","updated_at":"2026-08-07T09:03:15.937+00:00",'
                         '"download_uri":"https://example/x.json"}]}')
     assert extract(sample).startswith("2026-08-07T")
+
+
+# --- naming a release from the corpus itself -------------------------------
+
+def test_the_tag_distinguishes_a_cards_only_rebuild(tmp_path):
+    """The claim "older releases keep their assets" was FALSE while the tag
+    was the CR date alone: a Scryfall-only update — new Oracle text, unchanged
+    rules, the common case at a set release — landed on the existing tag and
+    clobbered its asset, so any deployment pinning the old archive could never
+    reinstall. The card date belongs in the tag."""
+    from corpus_release_id import release_id
+
+    a = _corpus(tmp_path / "a.sqlite")
+    b = _corpus(tmp_path / "b.sqlite")
+    for path, stamp in ((a, "2026-08-07T09:03:15.937+00:00"),
+                        (b, "2026-08-21T09:03:15.937+00:00")):
+        con = sqlite3.connect(path)
+        con.execute("INSERT INTO meta VALUES ('scryfall_updated_at', ?)", (stamp,))
+        con.commit()
+        con.close()
+
+    assert release_id(a)["tag"] != release_id(b)["tag"]
+    assert release_id(a)["tag"] == "cr-20260619-cards-20260807"
+
+
+def test_the_release_id_comes_from_the_corpus_not_a_fresh_lookup(tmp_path):
+    """Re-reading upstream to label a release samples it at a different moment
+    than the build did; if either source moved in between, the release would
+    describe a corpus that was never built."""
+    from corpus_release_id import release_id
+
+    path = _corpus(tmp_path / "c.sqlite", effective="August 7, 2026")
+    con = sqlite3.connect(path)
+    con.execute("INSERT INTO meta VALUES ('scryfall_updated_at', ?)",
+                ("2026-08-07T09:03:15.937+00:00",))
+    con.commit()
+    con.close()
+    info = release_id(path)
+    assert info["cr_effective_date"] == "August 7, 2026"
+    assert info["tag"] == "cr-20260807-cards-20260807"
+
+
+@pytest.mark.parametrize("effective", ["unknown", "", "sometime in June"])
+def test_an_unusable_effective_date_refuses_to_name_a_release(tmp_path, effective):
+    from corpus_release_id import release_id
+
+    path = _corpus(tmp_path / "c.sqlite", effective=effective)
+    con = sqlite3.connect(path)
+    con.execute("INSERT INTO meta VALUES ('scryfall_updated_at', ?)",
+                ("2026-08-07T09:03:15.937+00:00",))
+    con.commit()
+    con.close()
+    with pytest.raises(ValueError):
+        release_id(path)
+
+
+def test_a_missing_card_stamp_refuses_to_name_a_release(tmp_path):
+    from corpus_release_id import release_id
+
+    with pytest.raises(ValueError, match="scryfall_updated_at"):
+        release_id(_corpus(tmp_path / "c.sqlite"))

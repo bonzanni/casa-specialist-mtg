@@ -1,4 +1,4 @@
-# casa-mtg-judge
+# casa-specialist-mtg
 
 A Magic: The Gathering rules judge that answers from an offline corpus instead of from a model's memory, and refuses to state a ruling it cannot cite.
 
@@ -32,8 +32,8 @@ The corpus is read from `$CLAUDE_PLUGIN_DATA/corpus.sqlite` when that variable i
 ### As a Claude Code plugin
 
 ```
-/plugin marketplace add bonzanni/casa-mtg-judge
-/plugin install mtg@casa-mtg-judge
+/plugin marketplace add bonzanni/casa-specialist-mtg
+/plugin install mtg@casa-specialist-mtg
 ```
 
 Then build the corpus — the plugin ships without one, and **the installed
@@ -43,8 +43,8 @@ Clone the repository to build, then point `--out` at the installed plugin's
 `data/` directory:
 
 ```bash
-git clone https://github.com/bonzanni/casa-mtg-judge
-cd casa-mtg-judge
+git clone https://github.com/bonzanni/casa-specialist-mtg
+cd casa-specialist-mtg
 pip install -r scripts/requirements.txt
 python3 scripts/build_corpus.py --cr-url <URL> --out <installed-plugin>/data/corpus.sqlite
 ```
@@ -81,7 +81,7 @@ This repository contains no Magic: The Gathering rules text, card text, or rulin
 
 Two separate sets of terms apply, and they come from different parties. **Wizards of the Coast** owns the rules and card text; the Fan Content Policy below governs its use. **Scryfall** delivers the card data but does not license the underlying IP — its [API documentation](https://scryfall.com/docs/api) sets its own additional conditions, which as of this writing prohibit paywalling the data, implying Scryfall endorsement, and using the data for games other than Magic: The Gathering. Card data is fetched from Scryfall; Scryfall does not endorse this project. Check both sources yourself rather than relying on this summary.
 
-> casa-mtg-judge is unofficial Fan Content permitted under the [Fan Content Policy](https://company.wizards.com/en/legal/fancontentpolicy). Not approved/endorsed by Wizards. Portions of the materials used are property of Wizards of the Coast. ©Wizards of the Coast LLC.
+> casa-specialist-mtg is unofficial Fan Content permitted under the [Fan Content Policy](https://company.wizards.com/en/legal/fancontentpolicy). Not approved/endorsed by Wizards. Portions of the materials used are property of Wizards of the Coast. ©Wizards of the Coast LLC.
 
 ## Scope
 
@@ -94,7 +94,7 @@ pip install pytest ijson
 python3 -m pytest tests/ -q
 ```
 
-170 tests, no network and no corpus required — they build fixture databases in `tmp_path`. `tests/test_mtg_server.py` covers the JSON-RPC framing and adversarial-input contract (malformed requests, notifications, non-standard JSON constants, FTS injection, corrupt hash sidecars); `tests/test_build_corpus.py` covers CR parsing and the card-data transforms against offline fixtures; `tests/test_setup_corpus.py` covers the setup tool's transport and archive handling, with the one function that opens a socket replaced by a fake that serves bytes from memory.
+174 tests, no network and no corpus required — they build fixture databases in `tmp_path`. `tests/test_mtg_server.py` covers the JSON-RPC framing and adversarial-input contract (malformed requests, notifications, non-standard JSON constants, FTS injection, corrupt hash sidecars); `tests/test_build_corpus.py` covers CR parsing and the card-data transforms against offline fixtures; `tests/test_setup_corpus.py` covers the setup tool's transport and archive handling, with the one function that opens a socket replaced by a fake that serves bytes from memory.
 
 Test fixtures are invented rules and invented cards in the real formats, never excerpts — the parsers care about shape, and shape is reproducible without copying anything.
 
