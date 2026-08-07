@@ -460,7 +460,16 @@ def test_the_private_workflow_contains_the_canonical_consumer_verbatim():
 
     wanted = _executable_lines(CONSUMER.read_text())
     assert wanted, "the fixture has no executable content"
-    present = _executable_lines(workflow.read_text())
+    text = workflow.read_text()
+    present = _executable_lines(text)
+
+    # The snippet uses $STAMPS but cannot carry its binding, since the path
+    # differs by checkout. So the binding is checked separately: exactly one,
+    # pointing at the real producer. Otherwise the workflow could satisfy the
+    # comparison while running a different program entirely.
+    bindings = [line for line in present if line.startswith("STAMPS=")]
+    assert len(bindings) == 1, f"expected one STAMPS binding, got {bindings}"
+    assert bindings[0].endswith("scripts/scryfall_stamp.py"), bindings[0]
 
     # The fixture's lines must appear in the workflow, consecutively and in
     # order — not merely somewhere, each.
@@ -468,6 +477,14 @@ def test_the_private_workflow_contains_the_canonical_consumer_verbatim():
     assert "\n".join(wanted) in joined, (
         "the workflow no longer contains the canonical consumer verbatim.\n"
         "expected:\n  " + "\n  ".join(wanted))
+
+    # RESIDUAL, stated rather than implied: this proves the lines are present,
+    # consecutive, and bound to the real producer. It does not prove they are
+    # REACHED — they could sit in an unexecuted branch while a different
+    # consumer runs. Proving reachability means interpreting the shell, which
+    # is a bigger machine than the thing it would guard. Every route to it
+    # requires an owner edit to a private workflow, so the honest position is
+    # to say so here rather than imply a guarantee that is not being made.
 
 
 def test_the_skip_prediction_and_the_published_tag_are_one_function(tmp_path):
