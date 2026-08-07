@@ -61,7 +61,13 @@ pip install -r scripts/requirements.txt
 python3 scripts/build_corpus.py --cr-url <MagicCompRules .txt URL>
 ```
 
-Find the current `--cr-url` on the [Wizards rules page](https://magic.wizards.com/en/rules) — take the `.txt` link. Its filename carries the effective date and changes with every release. Scryfall's bulk data is discovered automatically through their API.
+There is no stable URL for the rules file — the filename carries the effective date and changes with every release — so `scripts/resolve_cr_url.py` reads the current one off the [Wizards rules page](https://magic.wizards.com/en/rules):
+
+```bash
+python3 scripts/build_corpus.py --cr-url "$(python3 scripts/resolve_cr_url.py)"
+```
+
+It refuses rather than guesses: no link, several links, or an unreachable page all exit non-zero instead of building a corpus from an invented URL. Scryfall's bulk data is discovered through their API. `scripts/check_corpus_plausible.py` will tell you whether the result actually parsed, which matters most when nobody is watching the build.
 
 This writes `plugins/mtg/data/corpus.sqlite` (~46 MB) and a `.sha256` sidecar. Add `--with-it-aliases` to also index Italian printed names, which downloads Scryfall's ~2 GB all-cards bulk file and streams it — worth it only if you ask questions in Italian.
 
@@ -88,7 +94,7 @@ pip install pytest ijson
 python3 -m pytest tests/ -q
 ```
 
-149 tests, no network and no corpus required — they build fixture databases in `tmp_path`. `tests/test_mtg_server.py` covers the JSON-RPC framing and adversarial-input contract (malformed requests, notifications, non-standard JSON constants, FTS injection, corrupt hash sidecars); `tests/test_build_corpus.py` covers CR parsing and the card-data transforms against offline fixtures; `tests/test_setup_corpus.py` covers the setup tool's transport and archive handling, with the one function that opens a socket replaced by a fake that serves bytes from memory.
+170 tests, no network and no corpus required — they build fixture databases in `tmp_path`. `tests/test_mtg_server.py` covers the JSON-RPC framing and adversarial-input contract (malformed requests, notifications, non-standard JSON constants, FTS injection, corrupt hash sidecars); `tests/test_build_corpus.py` covers CR parsing and the card-data transforms against offline fixtures; `tests/test_setup_corpus.py` covers the setup tool's transport and archive handling, with the one function that opens a socket replaced by a fake that serves bytes from memory.
 
 Test fixtures are invented rules and invented cards in the real formats, never excerpts — the parsers care about shape, and shape is reproducible without copying anything.
 
