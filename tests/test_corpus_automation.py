@@ -417,40 +417,57 @@ def test_the_canonical_consumer_reads_what_the_producer_prints():
     with tempfile.TemporaryDirectory() as d:
         stamp_file = pathlib.Path(d) / "stamps"
         stamp_file.write_text(produced)
-        body = CONSUMER.read_text().replace(
-            "python3 scripts/scryfall_stamp.py", f"cat {stamp_file}")
+        stub = pathlib.Path(d) / "stub.py"
+        stub.write_text("import sys, pathlib\n"
+                        f"sys.stdout.write(pathlib.Path({str(stamp_file)!r})"
+                        ".read_text())\n")
         out = subprocess.run(
-            ["bash", "-c", f"set -euo pipefail\n{body}\n"
-                           'printf "%s|%s" "$oracle_cards" "$rulings"'],
+            ["bash", "-c",
+             f"set -euo pipefail\nSTAMPS={stub}\n{CONSUMER.read_text()}\n"
+             'printf "%s|%s" "$oracle_cards" "$rulings"'],
             check=True, capture_output=True, text=True).stdout
     assert out == f"{stamps['oracle_cards']}|{stamps['rulings']}"
 
 
-def test_the_private_workflow_still_matches_the_canonical_consumer():
-    """Drift in the other direction. Skipped where the sibling repo is absent,
-    which is fine — the contract above is enforced unconditionally, and this
-    only adds the cross-check when both halves are present."""
+def _executable_lines(text: str) -> list[str]:
+    """Strip comments and blank lines, collapse whitespace."""
+    out = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        out.append(" ".join(stripped.split()))
+    return out
+
+
+def test_the_private_workflow_contains_the_canonical_consumer_verbatim():
+    """Token checks are not a contract.
+
+    Looking for two `read` substrings in order let a real edit change the
+    command inside the process substitution — adding `--kind oracle_cards`,
+    say — while both reads survived: tests green, scheduled builds broken. So
+    the whole executable snippet is compared, input command and guard
+    included.
+
+    Skipped where the sibling repo is absent, which is fine: the contract
+    itself is enforced unconditionally by the test above. This only adds the
+    cross-check when both halves are present.
+    """
     workflow = (ROOT.parent / "casa-mtg-corpus" /
                 ".github" / "workflows" / "build-corpus.yml")
     if not workflow.exists():
         pytest.skip("private build repository not checked out here")
-    text = workflow.read_text()
 
-    # An eval INVOCATION, not the word: the workflow explains in a comment why
-    # it does not eval, and a guard that fires on prose gets deleted.
-    evals = [line for line in text.splitlines()
-             if line.strip().startswith("eval ") or 'eval "$(' in line]
-    assert not evals, f"the consumer must never eval this output: {evals}"
+    wanted = _executable_lines(CONSUMER.read_text())
+    assert wanted, "the fixture has no executable content"
+    present = _executable_lines(workflow.read_text())
 
-    # The READ ORDER, not merely the presence of a read. Swapping the two
-    # lines still satisfies a substring check while binding the stamps the
-    # wrong way round.
-    reads = [line.strip() for line in text.splitlines()
-             if "read -r oracle_cards" in line or "read -r rulings" in line]
-    assert reads, "the workflow no longer consumes the stamps positionally"
-    joined = " ".join(reads)
-    assert joined.index("oracle_cards") < joined.index("rulings"), (
-        "the workflow reads the stamps in the wrong order")
+    # The fixture's lines must appear in the workflow, consecutively and in
+    # order — not merely somewhere, each.
+    joined = "\n".join(present)
+    assert "\n".join(wanted) in joined, (
+        "the workflow no longer contains the canonical consumer verbatim.\n"
+        "expected:\n  " + "\n  ".join(wanted))
 
 
 def test_the_skip_prediction_and_the_published_tag_are_one_function(tmp_path):
