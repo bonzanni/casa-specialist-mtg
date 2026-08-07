@@ -118,13 +118,19 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", action="store_true",
                     help="print the YYYYMMDD stamp instead of the URL")
+    ap.add_argument("--both", action="store_true",
+                    help="print 'URL DATE' from ONE fetch, so a caller "
+                         "needing both cannot straddle a page update")
     args = ap.parse_args()
     try:
         url, date = resolve(_fetch())
     except ResolveError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print(date if args.date else url)
+    if args.both:
+        print(f"{url} {date}")
+    else:
+        print(date if args.date else url)
     return 0
 
 

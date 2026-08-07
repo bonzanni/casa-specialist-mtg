@@ -58,6 +58,37 @@ def problems(path: Path) -> list[str]:
         if empty:
             found.append(f"{empty} rules have no text")
 
+        # Row counts say nothing about whether the rows are usable. A bulk
+        # response of objects carrying oracle_id but no name yields plenty of
+        # `cards` rows, an empty cards_fts, and no card that can be looked up
+        # — and setup_corpus only checks that cards_fts EXISTS, not that
+        # anything is in it.
+        for table, column in (("cards", "name"), ("cards", "oracle_text"),
+                              ("rulings", "comment")):
+            try:
+                blank = con.execute(
+                    f"SELECT count(*) FROM {table} "
+                    f"WHERE {column} IS NULL OR trim({column}) = ''"
+                ).fetchone()[0]
+                total = con.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            except sqlite3.Error as exc:
+                found.append(f"{table}.{column}: unreadable ({exc})")
+                continue
+            # Some cards legitimately have no rules text (vanilla creatures),
+            # so this is a "most of them are empty" check, not "any".
+            if total and blank > total // 2:
+                found.append(
+                    f"{table}.{column}: {blank} of {total} rows are empty")
+
+        for fts, base in (("cards_fts", "cards"), ("rules_fts", "rules")):
+            try:
+                n = con.execute(f"SELECT count(*) FROM {fts}").fetchone()[0]
+            except sqlite3.Error as exc:
+                found.append(f"{fts}: unreadable ({exc}) — search would fail")
+                continue
+            if n == 0:
+                found.append(f"{fts} is empty; every search would return nothing")
+
         # Subrules are the shape that breaks first when the parser drifts.
         subrules = con.execute(
             "SELECT count(*) FROM rules WHERE parent_id IS NOT NULL AND parent_id != ''"

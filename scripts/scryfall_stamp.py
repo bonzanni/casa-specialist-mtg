@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Print Scryfall's current oracle_cards snapshot timestamp.
+"""Print Scryfall's current bulk snapshot timestamps.
 
-Used to decide whether a corpus needs rebuilding. The Comprehensive Rules and
-the card data move independently — a set release changes Oracle text without
-touching the rules — so "is there anything new?" needs both answers, and this
-is the card half.
+Used to decide whether a corpus needs rebuilding. Three things move
+independently: the Comprehensive Rules, Oracle card text, and rulings. The
+builder downloads all three, so change detection has to watch all three —
+watching oracle_cards alone meant a rulings-only update was invisible, and
+production would keep answering from stale rulings until something unrelated
+happened to move.
 """
 from __future__ import annotations
 
+import argparse
 import json
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -22,21 +26,42 @@ class StampError(Exception):
     """Refusal, with a reason the operator can act on."""
 
 
-def extract(payload: dict) -> str:
-    """The oracle_cards entry's updated_at, or a refusal."""
+# Every dataset the builder consumes. Missing any one of them is a refusal:
+# a stamp that silently disappears would freeze change detection on that
+# dataset, and the only symptom is staleness nobody notices.
+WATCHED = ("oracle_cards", "rulings")
+
+_ISO = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+
+
+def extract(payload: dict, kind: str = "oracle_cards") -> str:
+    """One dataset's updated_at, validated, or a refusal."""
     entries = payload.get("data")
     if not isinstance(entries, list):
         raise StampError("bulk-data response has no data array")
     for entry in entries:
-        if isinstance(entry, dict) and entry.get("type") == "oracle_cards":
+        if isinstance(entry, dict) and entry.get("type") == kind:
             stamp = entry.get("updated_at")
-            if not stamp:
-                raise StampError("oracle_cards entry has no updated_at")
-            return str(stamp)
-    raise StampError("no oracle_cards entry in the bulk-data response")
+            # Not just truthiness. A blank or malformed value used to pass
+            # through and then match a substring of almost any release body,
+            # turning the change check into a permanent false "nothing new".
+            if not isinstance(stamp, str) or not _ISO.match(stamp.strip()):
+                raise StampError(
+                    f"{kind} updated_at is not an ISO timestamp: {stamp!r}")
+            return stamp.strip()
+    raise StampError(f"no {kind} entry in the bulk-data response")
+
+
+def extract_all(payload: dict) -> dict[str, str]:
+    """Every watched dataset's timestamp."""
+    return {kind: extract(payload, kind) for kind in WATCHED}
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--kind", choices=WATCHED,
+                    help="print one dataset's stamp instead of all of them")
+    args = ap.parse_args()
     request = urllib.request.Request(BULK_DATA, headers=UA)
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
@@ -48,10 +73,15 @@ def main() -> int:
         print(f"error: could not read {BULK_DATA}: {exc}", file=sys.stderr)
         return 1
     try:
-        print(extract(payload))
+        stamps = extract_all(payload)
     except StampError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    if args.kind:
+        print(stamps[args.kind])
+    else:
+        for kind in WATCHED:
+            print(f"{kind}={stamps[kind]}")
     return 0
 
 

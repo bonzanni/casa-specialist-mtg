@@ -25,17 +25,27 @@ def _corpus(path: Path, *, rules=3000, glossary=600, cards=30000,
     con.executescript(
         "CREATE TABLE rules(rule_id TEXT, parent_id TEXT, text TEXT, examples TEXT);"
         "CREATE TABLE glossary(term TEXT, definition TEXT);"
-        "CREATE TABLE cards(oracle_id TEXT, name TEXT);"
+        "CREATE TABLE cards(oracle_id TEXT, name TEXT, oracle_text TEXT);"
         "CREATE TABLE rulings(oracle_id TEXT, comment TEXT);"
-        "CREATE TABLE meta(key TEXT, value TEXT);")
+        "CREATE TABLE meta(key TEXT, value TEXT);"
+        # The search indexes belong in a fixture standing in for a healthy
+        # corpus: without them the plausibility check has nothing to inspect,
+        # and a fixture that omits what the checker looks for can only ever
+        # exercise the failure path while appearing to test the happy one.
+        "CREATE VIRTUAL TABLE rules_fts USING fts5(rule_id, text);"
+        "CREATE VIRTUAL TABLE cards_fts USING fts5(name, oracle_id UNINDEXED);")
+    con.executemany("INSERT INTO rules_fts VALUES (?,?)",
+                    [(str(i), "rule text") for i in range(rules)])
+    con.executemany("INSERT INTO cards_fts VALUES (?,?)",
+                    [("n", str(i)) for i in range(cards)])
     con.executemany(
         "INSERT INTO rules VALUES (?,?,?,?)",
         [(str(i), str(i) if i < subrules else None,
           "" if i < empty_text else "rule text", "") for i in range(rules)])
     con.executemany("INSERT INTO glossary VALUES (?,?)",
                     [(str(i), "d") for i in range(glossary)])
-    con.executemany("INSERT INTO cards VALUES (?,?)",
-                    [(str(i), "n") for i in range(cards)])
+    con.executemany("INSERT INTO cards VALUES (?,?,?)",
+                    [(str(i), f"Card {i}", "rules text") for i in range(cards)])
     con.executemany("INSERT INTO rulings VALUES (?,?)",
                     [(str(i), "c") for i in range(rulings)])
     con.execute("INSERT INTO meta VALUES ('cr_effective_date', ?)", (effective,))
@@ -170,3 +180,77 @@ def test_a_missing_card_stamp_refuses_to_name_a_release(tmp_path):
 
     with pytest.raises(ValueError, match="scryfall_updated_at"):
         release_id(_corpus(tmp_path / "c.sqlite"))
+
+
+def test_all_watched_datasets_must_be_present():
+    """The builder consumes oracle_cards AND rulings. Watching only the first
+    made a rulings-only update invisible, so production kept answering from
+    stale rulings until something unrelated happened to move."""
+    from scryfall_stamp import WATCHED, extract_all
+
+    assert "rulings" in WATCHED and "oracle_cards" in WATCHED
+    payload = {"data": [{"type": k, "updated_at": "2026-08-07T09:00:00+00:00"}
+                        for k in WATCHED]}
+    assert set(extract_all(payload)) == set(WATCHED)
+
+    partial = {"data": [{"type": "oracle_cards",
+                         "updated_at": "2026-08-07T09:00:00+00:00"}]}
+    with pytest.raises(StampError, match="rulings"):
+        extract_all(partial)
+
+
+@pytest.mark.parametrize("bad", [" ", "", "not-a-date", 20260807, None,
+                                 {"t": 1}, "2026/08/07"])
+def test_a_malformed_timestamp_is_refused_not_stringified(bad):
+    """Accepting any truthy value let a blank through, and a blank matches a
+    substring of almost any release body — turning the change check into a
+    permanent, silent "nothing new"."""
+    with pytest.raises(StampError):
+        extract({"data": [{"type": "oracle_cards", "updated_at": bad}]})
+
+
+def test_an_italian_build_gets_its_own_release(tmp_path):
+    """It is a different corpus from the same upstream data. Sharing a tag
+    meant asking for aliases against a current release reported 'nothing to
+    do' and silently never produced what was requested."""
+    from corpus_release_id import release_id
+
+    def build(name, aliases):
+        path = _corpus(tmp_path / name)
+        con = sqlite3.connect(path)
+        con.execute("INSERT INTO meta VALUES ('scryfall_updated_at', ?)",
+                    ("2026-08-07T09:03:15.937+00:00",))
+        con.execute("CREATE TABLE card_aliases(printed_lower, lang, oracle_id)")
+        con.executemany("INSERT INTO card_aliases VALUES (?,?,?)",
+                        [("x", "it", str(i)) for i in range(aliases)])
+        con.commit()
+        con.close()
+        return release_id(path)["tag"]
+
+    plain, italian = build("plain.sqlite", 0), build("it.sqlite", 500)
+    assert plain != italian
+    assert italian.endswith("-it") and not plain.endswith("-it")
+
+
+def test_cards_without_names_are_refused(tmp_path):
+    """Row counts pass while the corpus is unusable: objects with oracle_id
+    and no name give plenty of rows, an empty cards_fts, and nothing findable.
+    setup_corpus checks cards_fts EXISTS, not that anything is in it."""
+    path = _corpus(tmp_path / "c.sqlite")
+    con = sqlite3.connect(path)
+    con.execute("UPDATE cards SET name = ''")
+    con.commit()
+    con.close()
+    found = problems(path)
+    assert any("cards.name" in p for p in found), found
+
+
+def test_an_empty_search_index_is_refused(tmp_path):
+    path = _corpus(tmp_path / "c.sqlite")
+    con = sqlite3.connect(path)
+    con.execute("DELETE FROM cards_fts")
+    con.execute("DELETE FROM rules_fts")
+    con.commit()
+    con.close()
+    found = problems(path)
+    assert any("cards_fts is empty" in p for p in found), found

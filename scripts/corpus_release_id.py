@@ -69,8 +69,21 @@ def release_id(path: Path) -> dict[str, str]:
             raise ValueError(f"corpus meta is missing {key}")
     cr = _cr_stamp(meta["cr_effective_date"])
     sf = _scryfall_stamp(meta["scryfall_updated_at"])
+    # An Italian-alias build is a DIFFERENT corpus from the same upstream
+    # data, so it needs its own release. Without this, dispatching with
+    # aliases against an otherwise-current release reported "nothing to do"
+    # and quietly never produced the thing that was asked for.
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        aliases = con.execute("SELECT count(*) FROM card_aliases").fetchone()[0]
+    except sqlite3.Error:
+        aliases = 0
+    finally:
+        con.close()
+    suffix = "-it" if aliases else ""
     return {
-        "tag": f"cr-{cr}-cards-{sf}",
+        "tag": f"cr-{cr}-cards-{sf}{suffix}",
+        "aliases": str(aliases),
         "cr": cr,
         "cards": sf,
         "cr_effective_date": meta["cr_effective_date"],
