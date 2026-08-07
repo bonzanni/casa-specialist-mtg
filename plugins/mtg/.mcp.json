@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "mtg": {
+      "command": "python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/mtg_server.py"],
+      "env": {
+        "CASA_PLUGIN_MTG_CORPUS_URL": "${CASA_PLUGIN_MTG_CORPUS_URL:-}",
+        "CASA_PLUGIN_MTG_CORPUS_SHA256": "${CASA_PLUGIN_MTG_CORPUS_SHA256:-}",
+        "CASA_PLUGIN_MTG_CORPUS_TOKEN": "${CASA_PLUGIN_MTG_CORPUS_TOKEN:-}"
+      }
+    }
+  }
+}

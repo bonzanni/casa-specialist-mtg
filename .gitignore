@@ -1,0 +1,33 @@
+# Internal design material never ships in this repository.
+docs/
+.superpowers/
+# Local tooling state, including linked git worktrees. A tracked worktree
+# becomes a gitlink into another repository's object database, which has no
+# business in a published tree.
+.claude/
+
+# Corpus build inputs — raw Comprehensive Rules text and Scryfall bulk data.
+# These are upstream copyrighted material; this repository does not
+# redistribute them. scripts/build_corpus.py downloads them on demand.
+plugins/mtg/data/cr.txt
+plugins/mtg/data/*.json
+
+# Built corpus and its sidecar hash. Produced by scripts/build_corpus.py, or
+# installed by the setup tool into the plugin's external data directory —
+# never committed.
+corpus.sqlite
+corpus.sqlite.sha256
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# Worktrees / scratch
+.worktrees/
+.review-tmp/
+
+# The publication checklist is for this repository, not the published one.
+PUBLISH.md

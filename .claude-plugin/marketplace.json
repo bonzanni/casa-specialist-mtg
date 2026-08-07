@@ -1,0 +1,17 @@
+{
+  "name": "casa-mtg-judge",
+  "owner": {
+    "name": "Nicola Bonzanni",
+    "url": "https://github.com/bonzanni"
+  },
+  "plugins": [
+    {
+      "name": "mtg",
+      "source": "./plugins/mtg",
+      "description": "Magic: The Gathering rules judge — five read-only MCP tools over an offline Comprehensive Rules, Oracle text, and rulings corpus, plus a skill that requires every claim to be cited. Build the corpus with scripts/build_corpus.py after installing.",
+      "author": {"name": "Nicola Bonzanni", "url": "https://github.com/bonzanni"},
+      "license": "MIT",
+      "keywords": ["mtg", "magic-the-gathering", "rules", "mcp"]
+    }
+  ]
+}

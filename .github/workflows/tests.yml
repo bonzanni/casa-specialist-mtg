@@ -1,0 +1,45 @@
+# Tests, plus the guard that keeps rules text out of this repository.
+#
+# The corpus is built from Wizards of the Coast and Scryfall sources and is
+# never committed here — see README.md, "Rules data and attribution". A
+# .gitignore states that intention; this enforces it, including against a
+# `git add -f` that walks straight past the ignore rules.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: a corpus committed and then deleted is still in
+          # every clone anyone has already made.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build and test dependencies
+        run: pip install pytest -r scripts/requirements.txt
+
+      - name: Run tests
+        # The suite needs neither network nor a built corpus — it constructs
+        # fixture databases in tmp_path.
+        run: python3 -m pytest tests/ -q
+
+      # Both guards refuse on SIZE. The corpus is ~46MB of high-entropy data
+      # and stays large however it is wrapped; every legitimate file here is a
+      # few KB. Five earlier content-matching versions were each bypassed by a
+      # new encoding, because a signature miss was read as proof of innocence.
+      # Signatures remain only to ADD a refusal for small files carrying real
+      # rules text, and to word the failure message.
+      - name: Refuse a corpus in the working tree
+        run: python3 scripts/scan_no_corpus.py --tracked
+
+      - name: Refuse a corpus anywhere in the history
+        run: python3 scripts/scan_no_corpus.py --history

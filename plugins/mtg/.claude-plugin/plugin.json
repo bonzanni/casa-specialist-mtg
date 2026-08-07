@@ -1,0 +1,21 @@
+{
+  "name": "mtg",
+  "version": "1.1.0",
+  "description": "MTG judge corpus tools (offline CR + oracle cards + rulings) and ruling methodology skill.",
+  "author": {"name": "Nicola Bonzanni", "url": "https://github.com/bonzanni"},
+  "homepage": "https://github.com/bonzanni/casa-mtg-judge",
+  "repository": "https://github.com/bonzanni/casa-mtg-judge",
+  "license": "MIT",
+  "keywords": ["casa", "mtg", "magic-the-gathering", "rules", "mcp"],
+  "casa": {
+    "setupTool": "setup_corpus",
+    "provides_tools": [
+      "mcp__plugin_mtg_mtg__lookup_rule",
+      "mcp__plugin_mtg_mtg__search_rules",
+      "mcp__plugin_mtg_mtg__lookup_term",
+      "mcp__plugin_mtg_mtg__lookup_card",
+      "mcp__plugin_mtg_mtg__get_rulings",
+      "mcp__plugin_mtg_mtg__setup_corpus"
+    ]
+  }
+}
