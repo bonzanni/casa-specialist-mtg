@@ -583,3 +583,50 @@ def test_the_private_build_workflow_has_no_duplicate_keys():
     # Every step must be reachable as a step, not stranded in a stale block.
     names = [s.get("name", s.get("uses", "?")) for s in steps]
     assert len(names) == len(set(names)), f"duplicated steps: {names}"
+
+
+def test_a_404_classifies_as_absent_under_pipefail():
+    """`gh api ... | grep -q "Not Found"` reads as obviously correct and is
+    not: gh exits nonzero on a 404, so under `pipefail` the pipeline is
+    nonzero even when grep matched. Every build would have stopped at "could
+    not determine whether the tag exists" — a bug introduced BY adding a
+    safety setting, which is why the shape is worth a test rather than a
+    careful reading.
+    """
+    import subprocess
+
+    def classify(script_body):
+        return subprocess.run(
+            ["bash", "-c", "set -euo pipefail\n" + script_body],
+            capture_output=True, text=True).stdout.strip()
+
+    piped = '''
+        fake() { echo "gh: Not Found (HTTP 404)" >&2; return 1; }
+        if fake 2>&1 | grep -q "Not Found"; then echo absent; else echo failure; fi
+    '''
+    assert classify(piped) == "failure", (
+        "if this ever passes, the pipefail interaction has changed and the "
+        "comment explaining the fix is misleading")
+
+    separated = '''
+        fake() { echo "gh: Not Found (HTTP 404)" >&2; return 1; }
+        if out=$(fake 2>&1); then echo present
+        elif printf "%s" "$out" | grep -q "Not Found"; then echo absent
+        else echo failure; fi
+    '''
+    assert classify(separated) == "absent"
+
+    server_error = separated.replace("Not Found (HTTP 404)", "HTTP 500")
+    assert classify(server_error) == "failure", (
+        "a real failure must not be mistaken for an absence")
+
+
+def test_the_private_workflow_does_not_pipe_gh_into_grep():
+    """The shape that caused it, guarded directly."""
+    workflow = (ROOT.parent / "casa-mtg-corpus" /
+                ".github" / "workflows" / "build-corpus.yml")
+    if not workflow.exists():
+        pytest.skip("private build repository not checked out here")
+    offenders = [line.strip() for line in workflow.read_text().splitlines()
+                 if "gh api" in line and "| grep" in line]
+    assert not offenders, offenders
