@@ -707,3 +707,41 @@ def test_the_workflow_offers_no_force_input():
     text = workflow.read_text()
     assert "inputs.force" not in text and "FORCE:" not in text, (
         "force is back; if it now means something, say what in the workflow")
+
+
+def test_only_a_single_line_marker_claims_ownership_of_a_tag():
+    """`grep -E "^...$"` matches per LINE, not per string.
+
+    A tag message whose FIRST line is our reservation marker and whose second
+    is anything at all satisfied the check — and that answer authorises a
+    DELETE. So an operator could annotate a tag, or a marker could be forged
+    with a trailing line, and the workflow would remove it. A multi-line
+    message is not ours, full stop.
+    """
+    import subprocess
+
+    marker = "casa-mtg-corpus reservation"
+    body = r'''
+        MARKER=$1
+        check() {
+          local msg=$1
+          msg=${msg%$'\n'}
+          case "$msg" in *$'\n'*) echo other; return ;; esac
+          printf "%s" "$msg" | grep -qxE "$MARKER run [0-9]+" && echo ours || echo other
+        }
+        check "$2"
+    '''
+
+    def owner(message):
+        return subprocess.run(
+            ["bash", "-c", body, "_", marker, message],
+            capture_output=True, text=True).stdout.strip()
+
+    assert owner(f"{marker} run 481516") == "ours"
+    assert owner(f"{marker} run 481516\n") == "ours", "a trailing newline is normal"
+
+    # The exact defeating case.
+    assert owner(f"{marker} run 481516\noperator annotation") == "other"
+    assert owner(f"{marker} run 481516\n\nanything") == "other"
+    assert owner(f"{marker} by hand") == "other"
+    assert owner("v1.2.3") == "other"
