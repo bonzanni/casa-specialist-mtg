@@ -740,8 +740,17 @@ def test_only_a_single_line_marker_claims_ownership_of_a_tag():
     assert owner(f"{marker} run 481516") == "ours"
     assert owner(f"{marker} run 481516\n") == "ours", "a trailing newline is normal"
 
-    # The exact defeating case.
+    # Both defeating shapes: the marker first with anything appended, and the
+    # marker buried after an innocuous first line. Terra found the first, Sol
+    # the second — a per-line anchor accepts either.
     assert owner(f"{marker} run 481516\noperator annotation") == "other"
+    assert owner(f"operator note\n{marker} run 481516\ndo not delete") == "other"
     assert owner(f"{marker} run 481516\n\nanything") == "other"
     assert owner(f"{marker} by hand") == "other"
     assert owner("v1.2.3") == "other"
+
+    # RESIDUAL, since this has caught me out three times now: the function
+    # above is a COPY of the workflow's logic, not the workflow's logic. It
+    # pins the rule, not the implementation. The verbatim-snippet check used
+    # for the stamps consumer is the stronger pattern, and this ownership
+    # test does not yet use it.
