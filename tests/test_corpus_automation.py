@@ -630,3 +630,44 @@ def test_the_private_workflow_does_not_pipe_gh_into_grep():
     offenders = [line.strip() for line in workflow.read_text().splitlines()
                  if "gh api" in line and "| grep" in line]
     assert not offenders, offenders
+
+
+def test_only_a_proven_absence_permits_deletion():
+    """The fail-closed rule breaking in the one step that destroys something.
+
+    Cleanup treated every release-lookup failure as "no release" and deleted
+    the tag. A 500, a timeout or a rate limit would then remove the tag of a
+    release that does exist.
+    """
+    import subprocess
+
+    def decide(message, rc):
+        body = f'''
+            f() {{ echo "{message}" >&2; return {rc}; }}
+            if out=$(f 2>&1); then echo keep-release-exists
+            elif ! printf "%s" "$out" | grep -q "Not Found"; then echo keep-lookup-failed
+            else echo delete; fi
+        '''
+        return subprocess.run(["bash", "-c", "set -uo pipefail\n" + body],
+                              capture_output=True, text=True).stdout.strip()
+
+    assert decide("Not Found (HTTP 404)", 1) == "delete"
+    assert decide("HTTP 500 upstream error", 1) == "keep-lookup-failed"
+    assert decide("connection timed out", 1) == "keep-lookup-failed"
+    assert decide("{}", 0) == "keep-release-exists"
+
+
+def test_the_private_workflow_never_deletes_on_an_unproven_absence():
+    """The shape, guarded where it lives: any `gh api ... --silent 2>/dev/null`
+    used as the sole condition before a DELETE collapses failure into
+    absence."""
+    workflow = (ROOT.parent / "casa-mtg-corpus" /
+                ".github" / "workflows" / "build-corpus.yml")
+    if not workflow.exists():
+        pytest.skip("private build repository not checked out here")
+    text = workflow.read_text()
+    assert "method DELETE" in text, "expected the cleanup path to exist"
+    # Every DELETE must be preceded somewhere by a Not Found check.
+    assert text.count('grep -q "Not Found"') >= 2, (
+        "the cleanup path must prove a 404 before deleting, as the "
+        "classification step does")
