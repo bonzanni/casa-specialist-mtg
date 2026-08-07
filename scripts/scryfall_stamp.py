@@ -68,6 +68,17 @@ def extract_all(payload: dict) -> dict[str, str]:
     return {kind: extract(payload, kind) for kind in WATCHED}
 
 
+def format_output(stamps: dict[str, str]) -> str:
+    """Exactly what main() prints for a full run.
+
+    Its own function so a test can exercise the REAL format against the REAL
+    consumer. A test that feeds a hard-coded string to a copied shell snippet
+    proves only that the copy still matches the copy — which is how a workflow
+    that had been broken for a whole round went on passing.
+    """
+    return "".join(f"{stamps[kind]}\n" for kind in WATCHED)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--kind", choices=WATCHED + OPTIONAL,
@@ -101,8 +112,7 @@ def main() -> int:
         # Plain values, one per line, in WATCHED order. Deliberately NOT
         # `name=value` for a shell to eval: the workflow reads these
         # positionally instead, so nothing here is ever executed.
-        for kind in WATCHED:
-            print(stamps[kind])
+        sys.stdout.write(format_output(stamps))
     return 0
 
 

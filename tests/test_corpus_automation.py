@@ -382,34 +382,47 @@ def test_cards_without_rules_text_are_tolerated(tmp_path):
 def test_the_workflow_can_actually_read_what_the_script_prints():
     """This is the test whose absence let a broken workflow pass everything.
 
-    scryfall_stamp.py was changed from `name=value` lines to plain values, and
-    the workflow kept calling `eval` on the output — so every scheduled build
-    would have died trying to execute a timestamp as a command. 198 tests
-    passed, because they all exercised the producer and none exercised the
-    consumer. The shell that reads this output is part of the contract.
+    scryfall_stamp.py was changed from `name=value` lines to plain values, the
+    workflow kept calling `eval` on the output, and every scheduled build would
+    have died executing a timestamp as a command. Two hundred tests passed,
+    because they all exercised the producer and none exercised the consumer.
+
+    So this runs the REAL formatter — not a hard-coded copy of what it used to
+    emit — through the shell fragment the workflow really uses. If either side
+    changes shape without the other, this fails here rather than on a Monday.
     """
     import subprocess
 
-    script = ROOT / "scripts" / "scryfall_stamp.py"
-    produced = "2026-08-07T09:02:54.151+00:00\n2026-08-07T09:00:36.125+00:00\n"
+    from scryfall_stamp import WATCHED, format_output
 
-    # Exactly the consumption the workflow performs.
-    consumer = r'''
+    stamps = {"oracle_cards": "2026-08-07T09:02:54.151+00:00",
+              "rulings": "2026-08-07T09:00:36.125+00:00"}
+    produced = format_output(stamps)
+
+    workflow = (ROOT.parent / "casa-mtg-corpus" /
+                ".github" / "workflows" / "build-corpus.yml")
+    if workflow.exists():
+        # An INVOCATION, not the word: the workflow explains in a comment why
+        # it does not eval, and a substring check on "eval" flagged the
+        # explanation. A guard that fires on prose gets deleted by the next
+        # person who hits it.
+        evals = [line for line in workflow.read_text().splitlines()
+                 if line.strip().startswith("eval ") or 'eval "$(' in line]
+        assert not evals, f"the consumer must never eval this output: {evals}"
+        assert "read -r oracle_cards" in workflow.read_text(), (
+            "the consumer's read must match this producer's line order")
+
+    consumer = r"""
         set -eu
         { read -r oracle_cards; read -r rulings; } < <(printf '%s' "$1")
         [ -n "$oracle_cards" ] && [ -n "$rulings" ] || exit 1
         printf '%s|%s' "$oracle_cards" "$rulings"
-    '''
+    """
     out = subprocess.run(["bash", "-c", consumer, "_", produced],
                          check=True, capture_output=True, text=True).stdout
-    assert out == "2026-08-07T09:02:54.151+00:00|2026-08-07T09:00:36.125+00:00"
-
-    # And the output really is plain values, not shell assignments — the shape
-    # the consumer above depends on. (Checking the OUTPUT, not the source:
-    # the source discusses the old format in a comment, and a test that reads
-    # prose is a test that breaks when someone edits a sentence.)
-    assert "=" not in produced
-    assert script.exists()
+    assert out == f"{stamps['oracle_cards']}|{stamps['rulings']}"
+    # Line ORDER is part of the contract: the consumer reads positionally.
+    assert produced.splitlines() == [stamps[k] for k in WATCHED]
 
 
 def test_the_skip_prediction_and_the_published_tag_are_one_function(tmp_path):
