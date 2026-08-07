@@ -632,29 +632,35 @@ def test_the_private_workflow_does_not_pipe_gh_into_grep():
     assert not offenders, offenders
 
 
-def test_only_a_proven_absence_permits_deletion():
-    """The fail-closed rule breaking in the one step that destroys something.
+def test_only_a_real_404_permits_deletion():
+    """Two versions of this rule were wrong in the same direction.
 
-    Cleanup treated every release-lookup failure as "no release" and deleted
-    the tag. A 500, a timeout or a rate limit would then remove the tag of a
-    release that does exist.
+    First, cleanup treated every failed lookup as "no release" and deleted the
+    tag — so a 500 or a timeout removed the tag of a release that exists. Then
+    the fix proved a 404 by grepping the phrase "Not Found" in diagnostic
+    text, which any other failure can contain. The comments said "proven 404"
+    while the code matched a phrase; a claim and a proof are not the same.
+
+    It parses the status line now, and only 404 authorises a delete.
     """
     import subprocess
 
-    def decide(message, rc):
+    def decide(status_line):
         body = f'''
-            f() {{ echo "{message}" >&2; return {rc}; }}
-            if out=$(f 2>&1); then echo keep-release-exists
-            elif ! printf "%s" "$out" | grep -q "Not Found"; then echo keep-lookup-failed
-            else echo delete; fi
+            parse() {{ printf "%s\\n" "$1" | sed -nE "1s@^HTTP/[0-9.]+ ([0-9]{{3}}).*@\\1@p"; }}
+            s=$(parse "{status_line}")
+            case "$s" in 2*) echo keep-exists ;; 404) echo delete ;;
+              *) echo "keep-status-${{s:-none}}" ;; esac
         '''
         return subprocess.run(["bash", "-c", "set -uo pipefail\n" + body],
                               capture_output=True, text=True).stdout.strip()
 
-    assert decide("Not Found (HTTP 404)", 1) == "delete"
-    assert decide("HTTP 500 upstream error", 1) == "keep-lookup-failed"
-    assert decide("connection timed out", 1) == "keep-lookup-failed"
-    assert decide("{}", 0) == "keep-release-exists"
+    assert decide("HTTP/2.0 404 Not Found") == "delete"
+    assert decide("HTTP/2.0 200 OK") == "keep-exists"
+    assert decide("HTTP/2.0 500 Internal Server Error") == "keep-status-500"
+    # The precise case that defeated the phrase match.
+    assert decide("HTTP/2.0 500 upstream said Not Found") == "keep-status-500"
+    assert decide("curl: (7) connection refused") == "keep-status-none"
 
 
 def test_the_private_workflow_never_deletes_on_an_unproven_absence():
@@ -667,7 +673,37 @@ def test_the_private_workflow_never_deletes_on_an_unproven_absence():
         pytest.skip("private build repository not checked out here")
     text = workflow.read_text()
     assert "method DELETE" in text, "expected the cleanup path to exist"
-    # Every DELETE must be preceded somewhere by a Not Found check.
-    assert text.count('grep -q "Not Found"') >= 2, (
-        "the cleanup path must prove a 404 before deleting, as the "
-        "classification step does")
+    # Deletion must be gated on a parsed STATUS, never on the presence of a
+    # phrase in an error message.
+    assert 'grep -q "Not Found"' not in text, (
+        "authorising a delete by matching diagnostic text: any non-404 "
+        "failure mentioning those words would qualify")
+
+    # DOMINANCE, not a global count. Counting 404 checks anywhere in the file
+    # would keep passing after an unguarded DELETE is added somewhere else, so
+    # each one is checked against the lines that precede it in its own step.
+    lines = text.splitlines()
+    step_starts = [i for i, l in enumerate(lines) if l.startswith("      - name:")]
+    for i, line in enumerate(lines):
+        if "method DELETE" not in line:
+            continue
+        start = max([s for s in step_starts if s <= i], default=0)
+        before = "\n".join(lines[start:i])
+        assert "404" in before, (
+            f"the DELETE at line {i + 1} is not preceded in its own step by a "
+            "404 check; a failed lookup must never authorise a deletion")
+
+
+
+def test_the_workflow_offers_no_force_input():
+    """`force` promised to build when nothing had changed and could not: with
+    an absent tag the workflow builds anyway, and with a published one force
+    only turned a clean no-op into an error. An input that never enables
+    anything is a lie in the UI."""
+    workflow = (ROOT.parent / "casa-mtg-corpus" /
+                ".github" / "workflows" / "build-corpus.yml")
+    if not workflow.exists():
+        pytest.skip("private build repository not checked out here")
+    text = workflow.read_text()
+    assert "inputs.force" not in text and "FORCE:" not in text, (
+        "force is back; if it now means something, say what in the workflow")
