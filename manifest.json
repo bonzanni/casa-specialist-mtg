@@ -15,7 +15,7 @@
     {
       "kind": "plugin/implementation",
       "identifier": "mtg",
-      "digest": "sha256:dbe77ba90222413bce4c3af69ce99cd1bba271626c64977749fb76dc1145a908",
+      "digest": "sha256:191ea3f17ba216b3a6649bdf1a0e668c67f9b1cb8dddea8252aabb9079958e9a",
       "source": {
         "type": "bundled",
         "path": "plugins/mtg"

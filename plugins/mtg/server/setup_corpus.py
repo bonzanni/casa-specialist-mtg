@@ -419,6 +419,15 @@ def install_corpus(*, url: str, expected_sha256: str, token: str | None = None,
         # advertise provenance for bytes that are not there yet; this order
         # only degrades the reported hash to "unknown" until the second
         # rename lands, which the server already handles.
+        # Remove any existing sidecar FIRST. The two renames are not atomic,
+        # and an interruption between them leaves the new corpus beside the
+        # old sidecar — stale provenance, which the server reports as fact.
+        # Dropping it first makes the window report `unknown` instead, which
+        # is what the server already handles and what this comment used to
+        # claim without arranging for it.
+        sidecar_target = data_dir / SIDECAR_NAME
+        if sidecar_target.exists():
+            sidecar_target.unlink()
         os.replace(staged / CORPUS_NAME, target)
         os.replace(staged / SIDECAR_NAME, data_dir / SIDECAR_NAME)
     finally:

@@ -609,3 +609,43 @@ def test_an_fts_table_with_the_wrong_columns_is_refused(tmp_path):
     con.close()
     with pytest.raises(sc.SetupError, match="rules_fts"):
         sc._verify_is_corpus(path)
+
+
+def test_a_replacement_never_pairs_a_new_corpus_with_an_old_sidecar(
+        monkeypatch, asset, data_dir):
+    """The two renames are not atomic, and the comment claimed the window
+    degrades to `unknown` without arranging for it: the OLD sidecar survived
+    until the second rename, so an interruption left the new corpus beside
+    stale provenance — which the server reports as fact, in every citation.
+
+    Absent provenance is handled. Wrong provenance is not.
+    """
+    import os as _os
+
+    blob, digest, corpus = asset
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / sc.CORPUS_NAME).write_bytes(b"an older corpus")
+    (data_dir / sc.SIDECAR_NAME).write_text("0" * 64 + "\n")
+    stale = (data_dir / sc.SIDECAR_NAME).read_text()
+
+    seen = []
+    real_replace = _os.replace
+
+    def watched(src, dst):
+        real_replace(src, dst)
+        seen.append({
+            "corpus": (data_dir / sc.CORPUS_NAME).read_bytes()
+                      if (data_dir / sc.CORPUS_NAME).exists() else None,
+            "sidecar": (data_dir / sc.SIDECAR_NAME).read_text()
+                       if (data_dir / sc.SIDECAR_NAME).exists() else None,
+        })
+
+    monkeypatch.setattr(sc.os, "replace", watched)
+    _install(monkeypatch, _Transport({ORIGIN: _FakeResponse(blob)}),
+             body=blob, data_dir=data_dir, force=True)
+
+    for state in seen:
+        if state["corpus"] == corpus:
+            assert state["sidecar"] != stale, (
+                "the new corpus was visible beside the old sidecar; an "
+                "interruption there ships wrong provenance")
