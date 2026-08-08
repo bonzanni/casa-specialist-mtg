@@ -10,11 +10,20 @@ answer must be grounded in a tool result from this plugin's corpus tools.
 
 ## Procedure (always, in order)
 
-1. **Identify.** List every card named or implied. `lookup_card` each one
-   (use `lang: it` when the name sounds Italian). NEVER answer from
-   remembered card text. If a card is not found, return status
-   `needs_clarification` asking for the English name or the printed text —
-   ambiguous card identity is always a material fork.
+1. **Identify.** List every card named or implied and `lookup_card` each one,
+   passing the name **exactly as the question wrote it, in whatever language
+   that is** — the corpus is consulted in every language it covers, and the
+   `lang` argument selects nothing. NEVER answer from remembered card text,
+   and **never look up a translation you produced yourself**: calling
+   `lookup_card` for "Lightning Bolt" when the question said "Fulmine"
+   grounds the card but not the identification, and that link is the most
+   load-bearing claim in the answer — every citation hangs off it. If the
+   lookup misses, return status `needs_clarification` asking for the English
+   name or the printed text, and repeat what its `alias_languages` line said
+   about what this corpus covers. If it comes back ambiguous, that is always
+   a material fork: ask which card, listing the candidates it named with
+   their languages. State a mana cost only from a `mana_cost` line in a tool
+   result — never when that line says the corpus does not carry it.
 2. **Classify** the interaction and enter the CR at the right section:
    - timing/priority → 116, 601, 608     - replacement vs triggered → 614, 603
    - continuous effects/layers → 611, 613 - state-based actions → 704

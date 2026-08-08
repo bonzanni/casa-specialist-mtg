@@ -38,14 +38,19 @@ def _resolve_data_dir() -> Path:
 
 DB_PATH = _resolve_data_dir() / "corpus.sqlite"
 _DB: sqlite3.Connection | None = None
+_ALIAS_COVERAGE: dict[str, int] | None = None
 MAX_LIMIT = 8
 ECHO_LIMIT = 120  # user-echoed input is bounded in every response
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
 
 
 def _reset_db() -> None:
-    global _DB
+    global _DB, _ALIAS_COVERAGE
     _DB = None
+    # The coverage count describes the corpus the connection points at.
+    # setup_corpus can swap that corpus inside a live process, so the two
+    # must be invalidated together or corpus_info reports a mix of both.
+    _ALIAS_COVERAGE = None
 
 
 def _db() -> sqlite3.Connection:
@@ -72,10 +77,34 @@ def _parse_limit(args: dict, default: int = 5) -> int:
     return max(1, min(parsed, MAX_LIMIT))
 
 
-def _format_candidates(pairs: list[tuple[str, str]], limit: int = 5) -> str:
-    """Bounded 'Name (oracle_id)' candidate list, sorted for determinism."""
-    bounded = sorted(pairs, key=lambda p: p[0])[:limit]
-    return ", ".join(f"{name} ({oid})" for name, oid in bounded)
+def _format_candidates(triples: list[tuple[str, str, str]], limit: int = 5) -> str:
+    """Bounded 'Name (source, oracle_id)' list, sorted for determinism.
+
+    The total is printed whenever the list is truncated: a bounded list that
+    does not say it is bounded reads as complete, and 'elemental' really has
+    35 distinct identities in the real corpus.
+    """
+    bounded = sorted(triples)[:limit]
+    shown = ", ".join(f"{name} ({source}, {oid})" for name, source, oid in bounded)
+    if len(triples) > limit:
+        shown += f" — showing {limit} of {len(triples)}"
+    return shown
+
+
+def _alias_coverage() -> dict[str, int]:
+    """{lang: row count} from card_aliases, cached for the connection's life.
+
+    Derived rather than read from meta on purpose: a count of the actual rows
+    cannot disagree with the table it describes, and it is correct for every
+    corpus already built — including ones published before this code existed.
+    """
+    global _ALIAS_COVERAGE
+    if _ALIAS_COVERAGE is None:
+        _ALIAS_COVERAGE = {
+            row["lang"]: row["n"] for row in _db().execute(
+                "SELECT lang, count(*) AS n FROM card_aliases "
+                "WHERE lang IS NOT NULL AND trim(lang) <> '' GROUP BY lang")}
+    return _ALIAS_COVERAGE
 
 
 def _corpus_info() -> str:
@@ -99,7 +128,18 @@ def _corpus_info() -> str:
     candidate = text.split()[0] if text else ""
     if _SHA256_RE.match(candidate):
         digest = candidate[:16].lower()
-    return f"corpus_info: {kv}, artifact_sha256={digest}"
+    # What the corpus IS was already reported; this is what it COVERS. A
+    # model told only "not found" cannot say "this corpus cannot answer any
+    # question in this language", which is the more useful fact and the one
+    # that stops the next four questions. "unknown" is deliberately a third
+    # state: an unreadable table is not the same claim as no aliases.
+    try:
+        coverage = _alias_coverage()
+        langs = ", ".join(f"{k}:{v}" for k, v in sorted(coverage.items())) or "none"
+    except sqlite3.Error:
+        langs = "unknown"
+    return (f"corpus_info: {kv}, alias_languages={langs}, "
+            f"artifact_sha256={digest}")
 
 
 def _corpus_info_safe() -> str:
@@ -238,23 +278,74 @@ def _card_text(row) -> str:
             keywords = []
     if keywords:
         lines.append("keywords: " + ", ".join(keywords))
+    # Three states, deliberately distinct. "This card has no mana cost" (a
+    # land) and "this corpus does not carry mana cost" (a corpus built before
+    # the column existed) are different claims, and a reader who cannot tell
+    # them apart is back to recalling the cost from memory.
+    #
+    # A NULL or non-string value is neither of the two things this line can
+    # truthfully say, so it takes the non-asserting branch rather than being
+    # rendered as "none" or echoed back as though it were a cost. The builder
+    # declares the column NOT NULL and writes only strings, so reaching this
+    # needs a hand-built corpus -- which is precisely what a self-hosting
+    # operator installs, and the server must not state a fact it cannot
+    # support whatever it is pointed at.
+    try:
+        cost = row["mana_cost"]
+    except (IndexError, KeyError):
+        lines.append("mana_cost: not carried by this corpus")
+    else:
+        if not isinstance(cost, str):
+            lines.append("mana_cost: not carried by this corpus")
+        else:
+            lines.append(f"mana_cost: {cost}" if cost else "mana_cost: none")
     lines.append(f"oracle_id: {row['oracle_id']}")
     return "\n".join(lines)
+
+
+# --- coverage-sentence: begin ---
+def _coverage_sentence() -> str:
+    """What the corpus COVERS, said out loud on every miss.
+
+    Two situations used to be indistinguishable in the output: this corpus
+    holds no localized names at all, and this one name is missing. The first
+    is a fact about the corpus that answers the next four questions too, and
+    a model that cannot tell them apart has every incentive to translate and
+    continue -- which is exactly the defect this file is fixing.
+    """
+    try:
+        coverage = _alias_coverage()
+    except sqlite3.Error:
+        return ""
+    if not coverage:
+        return ("This corpus carries English card names only "
+                "(alias_languages=none): a printed name in another language "
+                "cannot resolve against it. Ask for the English name.")
+    langs = ", ".join(f"{k}:{v}" for k, v in sorted(coverage.items()))
+    return (f"This corpus carries printed names for {langs} alongside English "
+            f"names; this one matched none of them.")
+# --- coverage-sentence: end ---
 
 
 def tool_lookup_card(args: dict) -> str:
     raw_name = args.get("name", "")
     name = str(raw_name).strip().lower()
-    lang = str(args.get("lang", "en")).strip().lower()
+    # `lang` is accepted for compatibility and deliberately does NOT select
+    # anything. It used to gate the alias branch, which meant the model's
+    # guess about what language a name was in decided which table the server
+    # consulted -- and the model is the component this plugin exists to
+    # distrust. The server now answers the question it can answer ("what does
+    # this corpus know by this name?") rather than one it cannot ("what
+    # language was the user speaking?").
+    _ = str(args.get("lang", "en")).strip().lower()
     display_name = _truncate_echo(raw_name)
 
-    # An EXACT canonical name_lower match takes precedence over
-    # face-name-only matches for OTHER cards. If exactly one
-    # canonical exact match exists, the face-name (cards_fts) query is
-    # skipped entirely so a face-name hit on a different card can never turn
-    # a clean canonical resolution into a false ambiguity. Alias matches are
-    # NOT face-name matches and are always still consulted below -- an
-    # it-alias-vs-English disagreement must still surface as candidates.
+    # An EXACT canonical name_lower match still takes precedence over
+    # face-name-only matches for OTHER cards -- unchanged by the cut, and
+    # load-bearing: 'Lightning Bolt' is also a face of 'Emeritus of Conflict
+    # // Lightning Bolt', so consulting faces unconditionally would make 38
+    # ordinary lookups ambiguous for reasons having nothing to do with
+    # language.
     canonical_ids: list[str] = []
     for r in _db().execute(
         "SELECT oracle_id FROM cards WHERE name_lower=?", (name,)
@@ -262,53 +353,83 @@ def tool_lookup_card(args: dict) -> str:
         if r["oracle_id"] not in canonical_ids:
             canonical_ids.append(r["oracle_id"])
 
-    # Collect ALL matches from every source, then dedupe by oracle_id.
-    # Exactly one distinct oracle_id resolves; more than one is a genuine
-    # ambiguity (bounded candidates), never an arbitrary fetchone() pick.
-    matched: dict[str, None] = {}
+    # Every source that knows this name, with the source recorded. Exactly one
+    # distinct oracle_id resolves; more than one is a genuine ambiguity, never
+    # an arbitrary pick.
+    matched: dict[str, list[str]] = {}
+
+    def _note(oid: str, source: str) -> None:
+        sources = matched.setdefault(oid, [])
+        if source not in sources:
+            sources.append(source)
+
     for oid in canonical_ids:
-        matched.setdefault(oid, None)
+        _note(oid, "en")
 
     if len(canonical_ids) != 1:
         for r in _db().execute(
             "SELECT oracle_id FROM cards_fts WHERE name = ? COLLATE NOCASE",
             (raw_name,),
         ).fetchall():
-            matched.setdefault(r["oracle_id"], None)
+            _note(r["oracle_id"], "en face name")
 
-    if lang != "en":
-        for r in _db().execute(
-            "SELECT oracle_id FROM card_aliases WHERE printed_lower=? AND lang=?",
-            (name, lang),
-        ).fetchall():
-            matched.setdefault(r["oracle_id"], None)
+    # THE CUT: no lang gate. Localized printed names are consulted on every
+    # lookup, in every language the corpus holds.
+    #
+    # A row whose lang is NULL or blank is skipped, and the same predicate as
+    # _alias_coverage is used so the two can never disagree. Such a row used
+    # to resolve a card and label it 'matched by: None printed name "..."' --
+    # an attribution that names no language, pointing at a row the coverage
+    # line had already excluded. A reader cannot tell that from a real match.
+    for r in _db().execute(
+        "SELECT oracle_id, lang FROM card_aliases WHERE printed_lower=? "
+        "AND lang IS NOT NULL AND trim(lang) <> ''",
+        (name,),
+    ).fetchall():
+        _note(r["oracle_id"], f'{r["lang"]} printed name "{name}"')
 
     oracle_ids = list(matched.keys())
     if len(oracle_ids) == 1:
         row = _db().execute("SELECT * FROM cards WHERE oracle_id=?",
                             (oracle_ids[0],)).fetchone()
         if row is not None:
-            return _card_text(row) + "\n" + _corpus_info()
+            sources = ", ".join(matched[oracle_ids[0]])
+            return (f"{_card_text(row)}\nmatched by: {sources}\n"
+                    f"{_corpus_info()}")
     elif len(oracle_ids) > 1:
-        pairs = []
+        triples = []
         for oid in oracle_ids:
             r = _db().execute("SELECT name FROM cards WHERE oracle_id=?",
                               (oid,)).fetchone()
             if r is not None:
-                pairs.append((r["name"], oid))
-        if pairs:
+                triples.append((r["name"], ", ".join(matched[oid]), oid))
+        if triples:
             return (f"card {display_name!r} is ambiguous; candidates: "
-                    f"{_format_candidates(pairs)}\n{_corpus_info()}")
+                    f"{_format_candidates(triples)}\n{_corpus_info()}")
 
-    # Fuzzy candidates for typos / garbled STT (difflib over the name list;
-    # FTS MATCH alone won't catch "grizly bears"). Bounded and scored.
+    # Fuzzy candidates for typos / garbled STT (difflib; FTS MATCH alone won't
+    # catch "grizly bears"), drawn from BOTH English names and localized
+    # printed names, each labelled with where it came from. An unlabelled
+    # English suggestion for a localized input is the substitution that
+    # produced this bug.
     import difflib
-    names = [r["name"] for r in _db().execute("SELECT name FROM cards").fetchall()]
-    cands = difflib.get_close_matches(raw_name, names, n=5, cutoff=0.6)
+    pool: dict[str, str] = {}
+    for r in _db().execute("SELECT name FROM cards").fetchall():
+        pool.setdefault(r["name"], "en")
+    for r in _db().execute(
+        "SELECT printed_lower, lang FROM card_aliases "
+        "WHERE lang IS NOT NULL AND trim(lang) <> ''").fetchall():
+        # Same exclusion as the exact path above: a candidate labelled
+        # "(None printed name)" is an unattributable name offered as a
+        # suggestion, and the pool is built from the same rows.
+        pool.setdefault(r["printed_lower"], f'{r["lang"]} printed name')
+    cands = difflib.get_close_matches(raw_name, list(pool), n=5, cutoff=0.6)
+    coverage_note = _coverage_sentence()
     if cands:
+        listed = ", ".join(f"{c} ({pool[c]})" for c in cands)
         return (f"card {display_name!r} not found exactly; candidates: "
-                f"{', '.join(cands[:5])}\n{_corpus_info()}")
-    return f"card {display_name!r} not found\n{_corpus_info()}"
+                f"{listed}\n{coverage_note}\n{_corpus_info()}")
+    return f"card {display_name!r} not found\n{coverage_note}\n{_corpus_info()}"
 
 
 _SOURCE_LABELS = {
@@ -371,7 +492,11 @@ TOOLS = {
                   "minimum": 1, "maximum": MAX_LIMIT},
     }),
     "lookup_term": (tool_lookup_term, {"term": "glossary term, e.g. deathtouch"}),
-    "lookup_card": (tool_lookup_card, {"name": "card name", "lang": "en|it (default en)"}),
+    "lookup_card": (tool_lookup_card, {
+        "name": "card name, exactly as the question wrote it — in any "
+                "language the corpus covers (see alias_languages)",
+        "lang": "accepted and ignored; kept for compatibility",
+    }),
     "get_rulings": (tool_get_rulings, {"oracle_id": "from lookup_card"}),
     "setup_corpus": (tool_setup_corpus, {
         "url": "https:// URL of the corpus tarball (default: configured)",

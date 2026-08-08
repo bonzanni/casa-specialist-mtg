@@ -253,7 +253,7 @@ def build(cr_path: Path, oracle_path: Path, rulings_path: Path,
       CREATE TABLE glossary(term TEXT PRIMARY KEY, definition TEXT);
       CREATE TABLE cards(oracle_id TEXT PRIMARY KEY, name TEXT,
                          name_lower TEXT, type_line TEXT, oracle_text TEXT,
-                         keywords TEXT);
+                         keywords TEXT, mana_cost TEXT NOT NULL DEFAULT '');
       CREATE VIRTUAL TABLE cards_fts USING fts5(name, oracle_id UNINDEXED);
       CREATE TABLE card_aliases(printed_lower TEXT, lang TEXT, oracle_id TEXT);
       CREATE INDEX alias_idx ON card_aliases(printed_lower);
@@ -281,6 +281,49 @@ def build(cr_path: Path, oracle_path: Path, rulings_path: Path,
             f"{f.get('name','')}: {f.get('oracle_text','')}".strip()
             for f in faces if f.get("oracle_text"))
 
+    def _mana_cost(c: dict) -> str:
+        # Same convention as _oracle_text: transform and modal_dfc objects
+        # OMIT top-level mana_cost entirely (verified against the live card
+        # object, where it is absent rather than "") and carry the cost per
+        # face; split and adventure objects already carry the combined cost
+        # at top level, so they never reach the join. An empty string is a
+        # fact (lands have no cost) and must never become NULL — "the card
+        # has none" and "the corpus does not carry cost" are different
+        # claims, and conflating them is the defect this change removes.
+        #
+        # THIS FUNCTION DOES NOT CLASSIFY ABSENCE, deliberately, and three
+        # review rounds are why. A per-row guard here tried to tell "the feed
+        # stopped carrying costs" from "this card has none", and could not:
+        #
+        #   r24  raised when no top-level key existed -> would have refused
+        #        every transform card, whose cost lives per face.
+        #   r25  raised when no key existed on the object OR any face -> still
+        #        refused Westvale Abbey // Ormendahl, Profane Prince, a real
+        #        card with no top-level key and '' on both faces. That guard
+        #        would have killed the next weekly build.
+        #   r26  two reviewers proposed two DIFFERENT next sharpenings (require
+        #        the key on EVERY face; require an explicit '' rather than any
+        #        present key). A predicate that two careful readers derive
+        #        differently is underdetermined, not nearly-right.
+        #
+        # The cause is that "unknown for this row" has nowhere to live: the
+        # column is NOT NULL and holds a string, so every input must become a
+        # cost or ''. Sharpening the predicate a fourth time cannot add a state
+        # the schema does not have.
+        #
+        # So the question moves to where it can actually be answered. "Did the
+        # feed stop carrying costs?" is a property of the CORPUS, not of a row,
+        # and check_corpus_plausible.py already refuses a corpus with fewer
+        # than 20,000 priced cards -- pinned at 19,999/20,000 so the number
+        # means what it says. That gate catches the reachable failure (a
+        # renamed or dropped field, the `download_uri` -> `jsonl_download_uri`
+        # shape) without asking any single row a question it cannot answer.
+        if c.get("mana_cost"):
+            return c["mana_cost"]
+        faces = c.get("card_faces") or []
+        costs = [f.get("mana_cost", "") for f in faces if f.get("mana_cost")]
+        return " // ".join(costs)
+
     card_rows = 0
     for c in oracle:
         oid = c.get("oracle_id")
@@ -291,10 +334,10 @@ def build(cr_path: Path, oracle_path: Path, rulings_path: Path,
             # collide with real cards (e.g. "Delver of Secrets // Delver
             # of Secrets"). Exclude from cards/cards_fts entirely.
             continue
-        db.execute("INSERT OR REPLACE INTO cards VALUES (?,?,?,?,?,?)", (
+        db.execute("INSERT OR REPLACE INTO cards VALUES (?,?,?,?,?,?,?)", (
             oid, c.get("name"), (c.get("name") or "").lower(),
             c.get("type_line", ""), _oracle_text(c),
-            json.dumps(c.get("keywords", []))))
+            json.dumps(c.get("keywords", [])), _mana_cost(c)))
         for name, name_oid in _fts_name_rows(c):
             db.execute("INSERT INTO cards_fts VALUES (?,?)", (name, name_oid))
         card_rows += 1

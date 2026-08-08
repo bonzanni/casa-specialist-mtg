@@ -649,3 +649,27 @@ def test_a_replacement_never_pairs_a_new_corpus_with_an_old_sidecar(
             assert state["sidecar"] != stale, (
                 "the new corpus was visible beside the old sidecar; an "
                 "interruption there ships wrong provenance")
+
+
+def test_a_corpus_without_mana_cost_still_installs(tmp_path):
+    """_REQUIRED_SCHEMA is deliberately a subset so a column addition cannot
+    make a perfectly good corpus unloadable. This is the first time that
+    promise is exercised -- a pinned corpus in the field has no mana_cost."""
+    import sqlite3
+
+    path = tmp_path / sc.CORPUS_NAME
+    con = sqlite3.connect(path)
+    con.executescript(
+        "CREATE TABLE rules(rule_id, parent_id, text, examples);"
+        "CREATE TABLE glossary(term, definition);"
+        # no mana_cost column, exactly as every corpus built before it existed
+        "CREATE TABLE cards(oracle_id, name, name_lower, type_line, oracle_text);"
+        "CREATE TABLE rulings(oracle_id, published_at, source, comment);"
+        "CREATE TABLE meta(key, value);"
+        "CREATE VIRTUAL TABLE rules_fts USING fts5(rule_id, text);"
+        "CREATE VIRTUAL TABLE cards_fts USING fts5(name, oracle_id UNINDEXED);"
+        "CREATE TABLE card_aliases(printed_lower, lang, oracle_id);")
+    con.commit()
+    con.close()
+    sc._verify_is_corpus(path)      # must not raise
+    assert "mana_cost" not in str(sc._REQUIRED_SCHEMA["cards"])

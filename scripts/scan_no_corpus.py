@@ -95,7 +95,16 @@ MAX_TOTAL_BYTES = 2 * 1024 * 1024
 # It does NOT authorise exceeding the aggregate ceiling — a tree that large
 # needs a human decision about the ceiling itself, not an exemption for one
 # path. For history, exempt by blob id via ALLOWLIST_BLOBS instead.
-ALLOWLIST: dict[str, str] = {}
+ALLOWLIST: dict[str, str] = {
+    # 65 KB of pytest, and it was already within a kilobyte of the ceiling
+    # before round 24 added the mana_cost floor tests. Looked at: it is
+    # assertions and invented fixtures — no rules text, no card text, no
+    # captured upstream response. The exemption is for SIZE only; the
+    # signature checks above run before this list is consulted, so a real CR
+    # excerpt pasted into it would still be refused.
+    "tests/test_corpus_automation.py": (
+        "test source, reviewed 2026-08-08: assertions and invented fixtures"),
+}
 
 # Exemptions that survive history, keyed by the blob's object id. A path can
 # be reused, renamed, or reported ambiguously by rev-list; an object id names

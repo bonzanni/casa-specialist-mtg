@@ -22,7 +22,14 @@ from scryfall_stamp import StampError, extract  # noqa: E402
 
 def _corpus(path: Path, *, rules=3000, glossary=600, cards=30000,
             rulings=60000, subrules=1500, effective="June 19, 2026",
-            empty_text=0) -> Path:
+            empty_text=0, mana_cost=None, priced=None) -> Path:
+    """A corpus that passes every check, damaged only where a test asks.
+
+    `mana_cost=None` builds the pre-0.6 shape — no such column at all, which
+    is what every corpus published before that change looks like and what a
+    pinned one in the field still is. Pass a string to add the column and
+    fill every card with it.
+    """
     con = sqlite3.connect(path)
     con.executescript(
         "CREATE TABLE rules(rule_id TEXT, parent_id TEXT, text TEXT, examples TEXT);"
@@ -74,6 +81,17 @@ def _corpus(path: Path, *, rules=3000, glossary=600, cards=30000,
     con.executemany("INSERT INTO rulings VALUES (?,?)",
                     [(str(i % cards) if cards else None, "c")
                      for i in range(rulings)])
+    if mana_cost is not None:
+        con.execute(
+            "ALTER TABLE cards ADD COLUMN mana_cost TEXT NOT NULL DEFAULT ''")
+        if priced is None:
+            con.execute("UPDATE cards SET mana_cost=?", (mana_cost,))
+        else:
+            # Exactly `priced` rows carry a cost and the rest are blank, so a
+            # test can sit either side of the floor rather than only at 0.
+            con.execute(
+                "UPDATE cards SET mana_cost=? WHERE CAST(oracle_id AS INTEGER) < ?",
+                (mana_cost, priced))
     con.execute("INSERT INTO meta VALUES ('cr_effective_date', ?)", (effective,))
     con.commit()
     con.close()
@@ -105,6 +123,44 @@ def test_rules_with_no_text_are_refused(tmp_path):
     """A row count says nothing about whether the rows contain anything."""
     found = problems(_corpus(tmp_path / "c.sqlite", empty_text=40))
     assert any("no text" in p for p in found), found
+
+
+def test_a_cost_column_that_filled_with_nothing_is_refused(tmp_path):
+    """A column of empty strings passes every row count. That is precisely
+    the half-working parse this file exists to catch: the build succeeds,
+    the sidecar matches, setup_corpus verifies the schema, and every ruling
+    silently loses the ability to state a cost."""
+    found = problems(_corpus(tmp_path / "c.sqlite", mana_cost=""))
+    assert any("mana_cost" in p for p in found), found
+
+
+def test_the_cost_floor_is_where_it_says_it_is(tmp_path):
+    """Round 24, Sol S2. Every earlier test of this guard sat at 0 priced
+    rows, so mutating `priced < 20000` to `priced < 1` left all of them
+    passing -- the guard's NUMBER was unpinned, and a corpus with 20,000
+    costs and 16,018 blanks drew no complaint at all. Sitting one row either
+    side is what makes the floor mean 20,000 rather than 'more than none'.
+    """
+    just_under = problems(_corpus(tmp_path / "under.sqlite",
+                                  mana_cost="{R}", priced=19999))
+    assert any("mana_cost" in p for p in just_under), just_under
+    assert problems(_corpus(tmp_path / "at.sqlite",
+                            mana_cost="{R}", priced=20000)) == []
+
+
+def test_a_populated_cost_column_passes(tmp_path):
+    """The other direction, without which the check above would pass just as
+    well if `problems` refused every corpus carrying the column at all."""
+    assert problems(_corpus(tmp_path / "c.sqlite", mana_cost="{R}")) == []
+
+
+def test_a_corpus_predating_the_cost_column_is_noted_not_refused(tmp_path):
+    """A pinned corpus in the field has no mana_cost column. Refusing it here
+    would retroactively condemn a corpus that was fine when it was built —
+    the absence is worth SAYING, and nothing more."""
+    notes: list[str] = []
+    assert problems(_corpus(tmp_path / "c.sqlite"), notes) == []
+    assert any("no mana_cost column" in n for n in notes), notes
 
 
 def test_lost_subrules_are_refused(tmp_path):
@@ -1384,3 +1440,21 @@ def test_builder_revisions_sharing_a_prefix_get_different_tags():
     a = tag_from_inputs(builder="aaaaaaaaaaaa" + "1" * 28, **common)
     b = tag_from_inputs(builder="aaaaaaaaaaaa" + "2" * 28, **common)
     assert a != b, f"both builder revisions named {a}"
+
+
+def test_a_null_in_the_cost_column_is_refused(tmp_path):
+    """Round 27, Sol. The builder declares mana_cost NOT NULL, so a NULL
+    means the corpus was not built by it -- and the count of priced rows
+    steps straight over NULLs, so 20,000 real costs can hide any number of
+    them. Refusing is cheap; the server's fallback is the second line of
+    defence, not the first."""
+    path = _corpus(tmp_path / "c.sqlite")           # no cost column at all
+    con = sqlite3.connect(path)
+    # Nullable on purpose: the builder's column is NOT NULL, so reproducing
+    # this at all means declaring the column the way the builder never would.
+    con.execute("ALTER TABLE cards ADD COLUMN mana_cost TEXT")
+    con.execute(
+        "UPDATE cards SET mana_cost='{R}' WHERE CAST(oracle_id AS INTEGER) < 20000")
+    con.commit(); con.close()
+    found = problems(Path(path))
+    assert any("NULL" in p and "mana_cost" in p for p in found), found

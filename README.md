@@ -92,7 +92,7 @@ pip install -r tests/requirements.txt
 python3 -m pytest tests/ -q
 ```
 
-250 tests, no network required — they build fixture databases in `tmp_path`, including genuine FTS5 indexes, so the corpus-integrity checks are exercised without a corpus. One test additionally verifies a real built corpus if one is present, and skips otherwise. `tests/test_mtg_server.py` covers the JSON-RPC framing and adversarial-input contract (malformed requests, notifications, non-standard JSON constants, FTS injection, corrupt hash sidecars); `tests/test_build_corpus.py` covers CR parsing and the card-data transforms against offline fixtures; `tests/test_setup_corpus.py` covers the setup tool's transport and archive handling, with the one function that opens a socket replaced by a fake that serves bytes from memory.
+283 tests, no network required — they build fixture databases in `tmp_path`, including genuine FTS5 indexes, so the corpus-integrity checks are exercised without a corpus. One test additionally verifies a real built corpus if one is present, and skips otherwise. `tests/test_mtg_server.py` covers the JSON-RPC framing and adversarial-input contract (malformed requests, notifications, non-standard JSON constants, FTS injection, corrupt hash sidecars); `tests/test_build_corpus.py` covers CR parsing and the card-data transforms against offline fixtures; `tests/test_setup_corpus.py` covers the setup tool's transport and archive handling, with the one function that opens a socket replaced by a fake that serves bytes from memory.
 
 Test fixtures are invented rules and invented cards in the real formats, never excerpts — the parsers care about shape, and shape is reproducible without copying anything.
 

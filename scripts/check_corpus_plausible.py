@@ -97,6 +97,38 @@ def problems(path: Path, notes: list[str] | None = None) -> list[str]:
                     f"{table}.{column}: {blank} of {total} rows are empty "
                     f"(over the {limit:.0%} tolerance)")
 
+        # Most cards have a cost; lands legitimately do not. The floor is far
+        # below the real number (~30,000 of 36,000) for the same reason as
+        # FLOORS above: it catches a column that filled with nothing, not
+        # upstream drift. A corpus built before mana_cost existed has no
+        # column at all and is not this failure — say so and move on, because
+        # refusing it would retroactively condemn a corpus that was fine when
+        # it was built and is still pinned in the field.
+        try:
+            priced = con.execute(
+                "SELECT count(*) FROM cards WHERE trim(mana_cost) <> ''"
+            ).fetchone()[0]
+        except sqlite3.Error:
+            notes.append("cards has no mana_cost column (pre-0.6 corpus)")
+        else:
+            # The builder declares the column NOT NULL, so a NULL means this
+            # corpus was not built by it. It matters beyond tidiness: the
+            # count above steps straight over NULLs, so 20,000 real costs can
+            # sit alongside any number of rows the server would then have to
+            # decline to describe.
+            nulls = con.execute(
+                "SELECT count(*) FROM cards WHERE mana_cost IS NULL"
+            ).fetchone()[0]
+            if nulls:
+                found.append(
+                    f"cards: {nulls} rows have a NULL mana_cost; the column is "
+                    "declared NOT NULL, so this corpus was not built by "
+                    "scripts/build_corpus.py")
+            if priced < 20000:
+                found.append(
+                    f"cards: only {priced} rows carry a mana_cost, "
+                    f"expected at least 20000")
+
         # PROPORTIONATE, not merely non-empty. One row in cards_fts passed a
         # "not empty" test while almost every card lookup failed, which is the
         # same shape of hole as accepting a corpus because it has rows.

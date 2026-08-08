@@ -128,6 +128,7 @@ ORACLE_FIXTURE = [
         "name": "Voltaic Lash // Voltaic Lash",
         "type_line": "Sorcery",
         "oracle_text": "Spark a chosen widget for 3.",
+        "mana_cost": "{1}{R} // {1}{R}",
         "keywords": [],
         "card_faces": [
             {"name": "Voltaic Lash", "oracle_text": "Spark a chosen widget for 3."},
@@ -139,6 +140,7 @@ ORACLE_FIXTURE = [
         "name": "Frobnicate Flats",
         "type_line": "Basic Land — Frob",
         "oracle_text": "({T}: Add {F}.)",
+        "mana_cost": "",
         "keywords": [],
     },
 ]
@@ -280,6 +282,7 @@ def test_build_excludes_art_series_layout(tmp_path):
             "layout": "art_series",
             "type_line": "Card",
             "oracle_text": "",
+            "mana_cost": "",
             "keywords": [],
         },
         {
@@ -290,7 +293,8 @@ def test_build_excludes_art_series_layout(tmp_path):
             "oracle_text": "",
             "keywords": [],
             "card_faces": [
-                {"name": "Delver of Secrets", "oracle_text": "At the beginning..."},
+                {"name": "Delver of Secrets", "mana_cost": "{U}",
+                 "oracle_text": "At the beginning..."},
                 {"name": "Insectile Aberration", "oracle_text": "Flying"},
             ],
         },
@@ -327,6 +331,72 @@ def test_build_excludes_art_series_layout(tmp_path):
     assert any(r[0] == "oid-real" for r in fts)
     assert not any(r[0] == "oid-art" for r in aliases)
     assert any(r[0] == "oid-real" for r in aliases)
+
+
+# --- mana cost: carried as a fact, with '' distinguished from absent -------
+
+def _build_tiny_corpus(tmp_path, cards):
+    """Build a corpus from `cards` alone, reusing the CR/rulings boilerplate."""
+    cr = tmp_path / "cr.txt"
+    cr.write_text(
+        "These rules are effective as of June 19, 2026.\n\n"
+        "100.1. These are the rules of the game.\n\n"
+        "Glossary\nFrobnicate\nA keyword ability.\n\nCredits\nSomeone.\n",
+        encoding="utf-8",
+    )
+    oracle = tmp_path / "oracle_cards.json"
+    _write_jsonl(oracle, cards)
+    rulings = tmp_path / "rulings.json"
+    _write_jsonl(rulings, [])
+    out = tmp_path / "corpus.sqlite"
+    build(cr, oracle, rulings, None, out)
+    return out
+
+
+def test_mana_cost_is_carried_and_empty_is_preserved(tmp_path):
+    """A land has no mana cost; that is a fact about the card, and it must
+    survive as '' rather than NULL. 'absent from the data' and 'absent from
+    the corpus' are different claims — the whole point of this change."""
+    out = _build_tiny_corpus(tmp_path, cards=[
+        {"oracle_id": "o1", "name": "Lightning Bolt", "type_line": "Instant",
+         "oracle_text": "…", "mana_cost": "{R}"},
+        {"oracle_id": "o2", "name": "Island", "type_line": "Land",
+         "oracle_text": "", "mana_cost": ""},
+    ])
+    con = sqlite3.connect(out)
+    rows = dict(con.execute("SELECT name, mana_cost FROM cards"))
+    assert rows["Lightning Bolt"] == "{R}"
+    assert rows["Island"] == ""          # not None
+    assert con.execute(
+        "SELECT count(*) FROM cards WHERE mana_cost IS NULL").fetchone()[0] == 0
+    con.close()
+
+
+def test_mana_cost_joins_faces_when_top_level_is_absent(tmp_path):
+    """Checked against the live card object, not from memory: transform and
+    modal_dfc cards OMIT top-level mana_cost entirely (it is absent, not '')
+    and carry the real cost per face — while split/adventure carry the
+    combined cost at top level and need no join at all. Both shapes are
+    fixtured here so a builder that only handles one of them fails."""
+    out = _build_tiny_corpus(tmp_path, cards=[
+        # transform: no top-level mana_cost key at all, back face costs ''
+        {"oracle_id": "o3", "name": "Front // Back", "type_line": "Creature",
+         "layout": "transform", "oracle_text": "",
+         "card_faces": [{"name": "Front", "mana_cost": "{1}{G}", "oracle_text": "a"},
+                        {"name": "Back", "mana_cost": "", "oracle_text": "b"}]},
+        # split: combined cost present at top level, faces also carry theirs
+        {"oracle_id": "o4", "name": "Wear // Tear", "type_line": "Instant",
+         "layout": "split", "oracle_text": "", "mana_cost": "{1}{R} // {W}",
+         "card_faces": [{"name": "Wear", "mana_cost": "{1}{R}", "oracle_text": "a"},
+                        {"name": "Tear", "mana_cost": "{W}", "oracle_text": "b"}]},
+    ])
+    con = sqlite3.connect(out)
+    assert con.execute(
+        "SELECT mana_cost FROM cards WHERE oracle_id='o3'").fetchone()[0] == "{1}{G}"
+    assert con.execute(
+        "SELECT mana_cost FROM cards WHERE oracle_id='o4'"
+    ).fetchone()[0] == "{1}{R} // {W}"
+    con.close()
 
 
 def _bulk(*entries: dict) -> dict:
@@ -398,3 +468,80 @@ def test_jsonl_is_streamed_and_a_bad_line_is_fatal(tmp_path):
     bad.write_text('{"a": 1}\nnot json\n')
     with pytest.raises(ValueError, match="malformed JSONL"):
         list(_iter_jsonl(bad))
+
+
+def test_the_builder_does_not_classify_a_missing_cost_field(tmp_path):
+    """Rounds 24-26, and the reason the guard that used to live here is gone.
+
+    Three rounds of findings landed on one per-row predicate: it refused
+    transform cards, then refused a REAL card (Westvale Abbey // Ormendahl,
+    Profane Prince), then drew two different proposed sharpenings from two
+    reviewers. The cause is that "unknown for this row" has nowhere to live
+    -- the column is NOT NULL and holds a string -- so no predicate can add
+    the state the schema lacks.
+
+    Whether the feed still carries costs is a property of the CORPUS, and
+    check_corpus_plausible.py answers it there, pinned at 19,999/20,000.
+    This test pins the builder's half: every shape builds, none raises."""
+    out = _build_tiny_corpus(tmp_path, cards=[
+        # no key anywhere
+        {"oracle_id": "o5", "name": "Costless", "type_line": "Instant",
+         "oracle_text": "x"},
+        # a land declaring '' deliberately
+        {"oracle_id": "o6", "name": "Island", "type_line": "Land",
+         "oracle_text": "", "mana_cost": ""},
+        # one face carries the key, one does not
+        {"oracle_id": "o8", "name": "Partial // Drift", "type_line": "Creature",
+         "layout": "transform", "oracle_text": "",
+         "card_faces": [{"name": "Partial", "mana_cost": "", "oracle_text": "a"},
+                        {"name": "Drift", "oracle_text": "b"}]},
+        # a face carrying JSON null
+        {"oracle_id": "o9", "name": "Nulled // Face", "type_line": "Creature",
+         "layout": "transform", "oracle_text": "",
+         "card_faces": [{"name": "Nulled", "mana_cost": None, "oracle_text": "a"},
+                        {"name": "Face", "mana_cost": None, "oracle_text": "b"}]},
+    ])
+    con = sqlite3.connect(out)
+    rows = dict(con.execute("SELECT oracle_id, mana_cost FROM cards"))
+    con.close()
+    assert rows == {"o5": "", "o6": "", "o8": "", "o9": ""}
+
+
+def test_the_corpus_gate_owns_what_the_builder_stopped_asking(tmp_path):
+    """The other half of the cut, asserted rather than promised. If the feed
+    stops carrying costs, every row becomes '' -- and the corpus is refused
+    by the gate that can see all of them at once. Without this the cut would
+    be a removal with nothing put back."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    from check_corpus_plausible import problems
+
+    out = _build_tiny_corpus(tmp_path, cards=[
+        {"oracle_id": f"o{i}", "name": f"Card {i}", "type_line": "Instant",
+         "oracle_text": "x"} for i in range(3)])       # no costs anywhere
+    assert any("mana_cost" in p for p in problems(out)), problems(out)
+
+
+def test_a_card_whose_faces_all_declare_an_empty_cost_still_builds(tmp_path):
+    """Round 25, Sol, against round 24's own fix. Westvale Abbey // Ormendahl,
+    Profane Prince is a real transform card: no top-level mana_cost key, and
+    BOTH faces carry the key with ''. Verified against the live card object,
+    not reasoned about.
+
+    Round 24 filtered faces by truthiness, so both real fields vanished and
+    the card looked identical to one carrying no field anywhere -- and the
+    guard added to protect the build would have killed the next one. The
+    question the guard must ask is whether the KEY exists, not whether its
+    value is non-empty; that distinction is the entire point of the column."""
+    out = _build_tiny_corpus(tmp_path, cards=[
+        {"oracle_id": "o7", "name": "Westvale Abbey // Ormendahl, Profane Prince",
+         "layout": "transform", "oracle_text": "",
+         "card_faces": [{"name": "Westvale Abbey", "mana_cost": "", "oracle_text": "a"},
+                        {"name": "Ormendahl, Profane Prince", "mana_cost": "",
+                         "oracle_text": "b"}]},
+    ])
+    con = sqlite3.connect(out)
+    assert con.execute(
+        "SELECT mana_cost FROM cards WHERE oracle_id='o7'").fetchone()[0] == ""
+    con.close()

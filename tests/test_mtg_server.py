@@ -512,3 +512,302 @@ def test_data_dir_falls_back_to_the_bundled_directory(db, monkeypatch):
 def test_blank_plugin_data_is_treated_as_unset(db, monkeypatch):
     monkeypatch.setenv("CLAUDE_PLUGIN_DATA", "   ")
     assert db._resolve_data_dir() == db.BUNDLED_DATA_DIR
+
+
+# --- what the corpus COVERS, not only what it is -----------------------------
+
+def test_corpus_info_reports_alias_languages(db):
+    out = db.tool_lookup_card({"name": "grizzly bears"})
+    assert "alias_languages=it:1" in out
+
+
+def test_corpus_info_says_none_when_the_corpus_has_no_aliases(db):
+    con = sqlite3.connect(db.DB_PATH)
+    con.execute("DELETE FROM card_aliases")
+    con.commit(); con.close()
+    db._reset_db()
+    assert "alias_languages=none" in db.tool_lookup_card({"name": "grizzly bears"})
+
+
+def test_alias_coverage_is_invalidated_by_reset_db(db):
+    """setup_corpus can replace the corpus inside a live process. A cached
+    count that outlives the connection would describe the old corpus while
+    every other field describes the new one."""
+    assert "alias_languages=it:1" in db.tool_lookup_card({"name": "grizzly bears"})
+    con = sqlite3.connect(db.DB_PATH)
+    con.execute("INSERT INTO card_aliases VALUES ('altro nome','it','oid1')")
+    con.commit(); con.close()
+    db._reset_db()
+    assert "alias_languages=it:2" in db.tool_lookup_card({"name": "grizzly bears"})
+
+
+def test_corpus_info_says_unknown_when_the_alias_table_cannot_be_read(db):
+    """'unknown' is a third state on purpose: it is neither 'no languages'
+    nor a number, and reporting an unreadable table as none would be a claim
+    about the corpus drawn from a failure to read it.
+
+    Asserted through lookup_rule, not lookup_card: card_aliases is in
+    setup_corpus._REQUIRED_SCHEMA, so a corpus missing it cannot install, and
+    after the cut lookup_card consults it on every call and raises here — as
+    that module's own comment says it should. corpus_info is reached by every
+    tool, and the ones that do not touch aliases must still print a line."""
+    con = sqlite3.connect(db.DB_PATH)
+    con.execute("DROP TABLE card_aliases")
+    con.commit(); con.close()
+    db._reset_db()
+    assert "alias_languages=unknown" in db.tool_lookup_rule({"rule_id": "702.2"})
+
+
+# --- the cut: `lang` no longer selects which table is consulted --------------
+
+def test_lang_changes_nothing(db):
+    """`lang` was a guess by the model — the one component this plugin
+    exists to distrust — and it selected which table was consulted. It is
+    now inert. A future edit that reintroduces a lang-selected branch fails
+    here rather than in the field."""
+    a = db.tool_lookup_card({"name": "Orso Grizzly"})
+    b = db.tool_lookup_card({"name": "Orso Grizzly", "lang": "en"})
+    c = db.tool_lookup_card({"name": "Orso Grizzly", "lang": "it"})
+    assert a == b == c
+    assert "Grizzly Bears" in a
+
+
+def test_a_name_meaning_different_cards_in_two_languages_is_ambiguous(db):
+    """The real corpus collision: Italian 'vendetta' is the printed name of
+    the English card Vengeance, and a DIFFERENT English card is named
+    Vendetta. Resolving that to either one is a coin flip presented as a
+    ruling."""
+    con = sqlite3.connect(db.DB_PATH)
+    con.execute("INSERT INTO cards VALUES ('oid-ven','Vendetta','vendetta','Instant','','[]')")
+    con.execute("INSERT INTO cards VALUES ('oid-vng','Vengeance','vengeance','Sorcery','','[]')")
+    con.execute("INSERT INTO cards_fts VALUES ('Vendetta','oid-ven')")
+    con.execute("INSERT INTO cards_fts VALUES ('Vengeance','oid-vng')")
+    con.execute("INSERT INTO card_aliases VALUES ('vendetta','it','oid-vng')")
+    con.commit(); con.close()
+    db._reset_db()
+    out = db.tool_lookup_card({"name": "Vendetta"})    # no lang at all
+    assert "ambiguous" in out.lower()
+    assert "Vendetta" in out and "Vengeance" in out
+    assert "it printed name" in out
+
+
+def test_canonical_precedence_survives_the_cut(db):
+    """An exact canonical match still suppresses other cards' face names.
+    Both reviewers reached for this case: in the real corpus 'Lightning
+    Bolt' is also a FACE of 'Emeritus of Conflict // Lightning Bolt', so
+    consulting faces unconditionally makes 38 ordinary lookups ambiguous."""
+    con = sqlite3.connect(db.DB_PATH)
+    con.execute("INSERT INTO cards VALUES ('oid-lb','Lightning Bolt','lightning bolt','Instant','','[]')")
+    con.execute("INSERT INTO cards VALUES ('oid-dfc','Emeritus of Conflict // Lightning Bolt','emeritus of conflict // lightning bolt','Creature','','[]')")
+    con.execute("INSERT INTO cards_fts VALUES ('Lightning Bolt','oid-lb')")
+    con.execute("INSERT INTO cards_fts VALUES ('Lightning Bolt','oid-dfc')")
+    con.commit(); con.close()
+    db._reset_db()
+    out = db.tool_lookup_card({"name": "Lightning Bolt"})
+    assert "ambiguous" not in out.lower()
+    assert "oid-lb" in out and "oid-dfc" not in out
+
+
+def test_a_resolved_card_names_the_source_that_resolved_it(db):
+    out = db.tool_lookup_card({"name": "Orso Grizzly"})
+    assert 'it printed name "orso grizzly"' in out
+
+
+def test_a_card_resolved_by_its_english_name_says_so_too(db):
+    """The other half of attribution: an English hit is labelled as one, so
+    'matched by' is never a line that only appears for localized names."""
+    assert "matched by: en" in db.tool_lookup_card({"name": "grizzly bears"})
+
+
+def test_candidate_list_is_bounded_and_reports_the_total(db):
+    """`elemental` has 35 identities in the real corpus. A silently
+    truncated list claims a completeness it does not have."""
+    con = sqlite3.connect(db.DB_PATH)
+    for i in range(8):
+        con.execute("INSERT INTO cards VALUES (?,?,?,'Creature','','[]')",
+                    (f"oid-e{i}", "Elemental", "elemental"))
+        con.execute("INSERT INTO cards_fts VALUES ('Elemental',?)", (f"oid-e{i}",))
+    con.commit(); con.close()
+    db._reset_db()
+    out = db.tool_lookup_card({"name": "Elemental"})
+    assert "showing 5 of 8" in out
+
+
+# --- a miss says what the corpus covers, not only that it missed -------------
+
+def test_a_miss_states_the_corpus_language_coverage(db):
+    out = db.tool_lookup_card({"name": "zzqqxx"})
+    assert "not found" in out.lower()
+    assert "alias_languages=it:1" in out
+    assert "carries" in out.lower()
+
+
+def test_a_miss_on_an_english_only_corpus_says_english_only(db):
+    con = sqlite3.connect(db.DB_PATH)
+    con.execute("DELETE FROM card_aliases")
+    con.commit(); con.close()
+    db._reset_db()
+    out = db.tool_lookup_card({"name": "Fulmine"})
+    assert "English card names only" in out
+
+
+def test_fuzzy_candidates_are_labelled_by_language(db):
+    """A near-miss on an Italian name must come back as an Italian name, not
+    as a plausible-looking English suggestion — that substitution is what
+    produced the original defect."""
+    out = db.tool_lookup_card({"name": "Orso Grizzli"})   # typo on the alias
+    assert "orso grizzly" in out.lower()
+    assert "it printed name" in out
+
+
+def test_english_typo_recovery_survives_on_an_english_only_corpus(db):
+    """An earlier draft skipped fuzzy when coverage was zero. The server
+    cannot know an input was localized, and skipping fuzzy would break
+    ordinary typo recovery."""
+    con = sqlite3.connect(db.DB_PATH)
+    con.execute("DELETE FROM card_aliases")
+    con.commit(); con.close()
+    db._reset_db()
+    out = db.tool_lookup_card({"name": "grizly bears"})
+    assert "Grizzly Bears" in out
+
+
+# --- a kept mutation test, not a mutation a reviewer promises to re-run ------
+
+def test_excising_the_coverage_sentence_changes_the_answer(db):
+    """A kept mutation test, because six times in this repo a check has
+    reported success while exercising nothing, and a reviewer re-running a
+    mutation by hand is what kept failing.
+
+    It asserts BOTH directions. Asserting only that the mutated module says
+    a bare "not found" would pass just as well if the coverage sentence had
+    never been written -- that IS the pre-change behaviour. Terra caught
+    exactly this in design round 1.
+    """
+    import re
+    source = Path(db.__file__).read_text(encoding="utf-8")
+    mutated, n = re.subn(
+        r"# --- coverage-sentence: begin ---.*?# --- coverage-sentence: end ---",
+        "def _coverage_sentence() -> str:\n    return ''",
+        source, flags=re.DOTALL)
+    assert n == 1, "source markers moved; this test is no longer excising anything"
+
+    # Direction 1: unmutated, the sentence is there.
+    intact = db.tool_lookup_card({"name": "zzqqxx"})
+    assert "This corpus carries" in intact
+
+    # Direction 2: excised, it is gone -- and nothing else broke.
+    # __file__ because the module resolves its bundled data dir at import;
+    # __name__ so the mutated copy does not decide it is __main__ and serve.
+    ns: dict = {"__file__": db.__file__, "__name__": "mtg_server_mutated"}
+    exec(compile(mutated, "mtg_server_mutated", "exec"), ns)
+    ns["DB_PATH"] = db.DB_PATH
+    ns["_reset_db"]()
+    damaged = ns["tool_lookup_card"]({"name": "zzqqxx"})
+    assert "This corpus carries" not in damaged
+    assert "not found" in damaged.lower()
+
+
+# --- cost is three-valued ----------------------------------------------------
+
+def test_mana_cost_distinguishes_none_from_not_carried(db):
+    """Three states, three sentences. 'The card has no cost' and 'this
+    corpus does not carry cost' are different claims; collapsing them
+    recreates the original defect in a new field."""
+    con = sqlite3.connect(db.DB_PATH)
+    con.execute("ALTER TABLE cards ADD COLUMN mana_cost TEXT NOT NULL DEFAULT ''")
+    con.execute("UPDATE cards SET mana_cost='{1}{G}' WHERE oracle_id='oid1'")
+    con.execute("INSERT INTO cards VALUES ('oid-land','Island','island','Land','','[]','')")
+    con.execute("INSERT INTO cards_fts VALUES ('Island','oid-land')")
+    con.commit(); con.close()
+    db._reset_db()
+    assert "mana_cost: {1}{G}" in db.tool_lookup_card({"name": "grizzly bears"})
+    assert "mana_cost: none" in db.tool_lookup_card({"name": "Island"})
+
+
+def test_a_corpus_without_the_column_says_so(db):
+    """The fixture corpus has no mana_cost column -- exactly like every
+    corpus published before this change."""
+    out = db.tool_lookup_card({"name": "grizzly bears"})
+    assert "mana_cost: not carried by this corpus" in out
+
+
+# --- an alias that names no language cannot attribute anything ---------------
+
+def test_an_alias_with_no_language_does_not_resolve(db):
+    """Round 24, found by both reviewers independently. A card_aliases row
+    with a NULL or blank lang used to resolve a card and label it
+    'matched by: None printed name "..."' -- an attribution naming no
+    language, pointing at a row alias_languages had already excluded from
+    the coverage count. The result block looked exactly as grounded as a
+    real one, which is the whole failure this change exists to remove.
+
+    Ignoring the row is what makes the two lines agree: the corpus is then
+    reported as carrying no such language, and the name does not resolve."""
+    con = sqlite3.connect(db.DB_PATH)
+    con.execute("UPDATE card_aliases SET lang=NULL WHERE printed_lower='orso grizzly'")
+    con.commit(); con.close()
+    db._reset_db()
+    out = db.tool_lookup_card({"name": "Orso Grizzly"})
+    assert "None printed name" not in out
+    assert "Grizzly Bears —" not in out       # no card block: it must not resolve
+    assert "not found" in out.lower()
+    assert "alias_languages=none" in out
+
+
+def test_a_blank_language_alias_does_not_resolve_either(db):
+    """NULL is not the only way to have no language; '' and '   ' reach the
+    same place, and _alias_coverage already excludes all three."""
+    con = sqlite3.connect(db.DB_PATH)
+    con.execute("UPDATE card_aliases SET lang='   ' WHERE printed_lower='orso grizzly'")
+    con.commit(); con.close()
+    db._reset_db()
+    out = db.tool_lookup_card({"name": "Orso Grizzly"})
+    assert "matched by" not in out          # nothing resolved it
+    assert "Grizzly Bears —" not in out     # and no card block came back
+    assert "not found" in out.lower()
+    assert "alias_languages=none" in out
+
+
+def test_an_unlabelled_alias_is_not_offered_as_a_fuzzy_candidate(db):
+    """The same row reaches the reader by a second route. A suggestion
+    labelled '(None printed name)' is an unattributable name presented as a
+    candidate, and the fuzzy tail builds its pool from the same table."""
+    con = sqlite3.connect(db.DB_PATH)
+    con.execute("UPDATE card_aliases SET lang=NULL WHERE printed_lower='orso grizzly'")
+    con.commit(); con.close()
+    db._reset_db()
+    out = db.tool_lookup_card({"name": "Orso Grizzli"})    # typo on the alias
+    assert "None printed name" not in out
+    assert "orso grizzly" not in out.lower()
+
+
+def test_a_null_cost_is_not_reported_as_none(db):
+    """Round 27, Sol. A NULL cost supports neither 'this card has no cost'
+    nor a cost, but truthiness collapsed it into 'none' -- an unsupported
+    claim in the field this change exists to make honest.
+
+    The builder writes the column NOT NULL, so this needs a hand-built
+    corpus to reach; that is exactly the corpus a self-hosting operator
+    installs, and the server must not state a fact it cannot support
+    whatever it is pointed at."""
+    con = sqlite3.connect(db.DB_PATH)
+    con.execute("ALTER TABLE cards ADD COLUMN mana_cost TEXT")   # nullable
+    con.commit(); con.close()
+    db._reset_db()
+    out = db.tool_lookup_card({"name": "grizzly bears"})
+    assert "mana_cost: none" not in out
+    assert "mana_cost: not carried by this corpus" in out
+
+
+def test_a_non_string_cost_is_not_reported_as_a_cost(db):
+    """The same seam by a different route: an integer or a blob is not a
+    mana cost, and printing it back would launder it into one."""
+    con = sqlite3.connect(db.DB_PATH)
+    con.execute("ALTER TABLE cards ADD COLUMN mana_cost")         # no type
+    con.execute("UPDATE cards SET mana_cost=3 WHERE oracle_id='oid1'")
+    con.commit(); con.close()
+    db._reset_db()
+    out = db.tool_lookup_card({"name": "grizzly bears"})
+    assert "mana_cost: 3" not in out
+    assert "mana_cost: not carried by this corpus" in out
