@@ -1,0 +1,9 @@
+# Test-only dependencies.
+#
+# The runtime server and the corpus builder are both stdlib-only; these are
+# needed by the suite alone. PyYAML parses the workflows so a duplicate key
+# cannot reach GitHub — the check that exists because `safe_load` is more
+# permissive than GitHub, and which then failed in CI for five consecutive
+# pushes because nothing installed it.
+pytest
+PyYAML

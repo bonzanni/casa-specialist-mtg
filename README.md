@@ -88,7 +88,7 @@ Casual-game rules and current Oracle text. Tournament policy, format legality, a
 ## Development
 
 ```bash
-pip install pytest
+pip install -r tests/requirements.txt
 python3 -m pytest tests/ -q
 ```
 
