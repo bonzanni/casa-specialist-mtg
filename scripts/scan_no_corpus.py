@@ -111,7 +111,16 @@ ALLOWLIST: dict[str, str] = {
 # exactly one sequence of bytes that a human looked at. Everything historical
 # is judged on this, which is also what makes an exemption usable at all: a
 # path-keyed one could never be honoured in history.
-ALLOWLIST_BLOBS: dict[str, str] = {}
+ALLOWLIST_BLOBS: dict[str, str] = {
+    # tests/test_corpus_automation.py at 067 bytes over the ceiling, as it
+    # entered history in 068ad0f. The path-keyed entry above cannot be
+    # honoured here by design, and this blob is published: rewriting history
+    # to remove it would be a far larger act than the 1,489 bytes that
+    # crossed the line. Inspected: pytest assertions and invented fixtures,
+    # no rules or card text.
+    "eb15a6ab6e4dd595add8c151ca114d44bfa9cf7b": (
+        "test source, reviewed 2026-08-08: assertions and invented fixtures"),
+}
 
 # A sentinel path that can never be in ALLOWLIST, used to route history's
 # verdicts away from path-based exemption.
