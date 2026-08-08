@@ -7,3 +7,10 @@
 # pushes because nothing installed it.
 pytest
 PyYAML
+
+# rfc8785 is optional: the manifest-checksum test computes the canonical
+# form itself and only cross-checks against casa's implementation when both
+# casa's source and this library are present. Listed so that cross-check
+# actually runs for anyone working next to a casa checkout — it was absent,
+# so the check silently downgraded to a skip and reported a pass.
+rfc8785

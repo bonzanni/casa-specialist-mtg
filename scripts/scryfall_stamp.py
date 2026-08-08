@@ -45,22 +45,41 @@ _ISO = re.compile(
     r"(?:Z|[+-]\d{2}:?\d{2})?")
 
 
-def extract(payload: dict, kind: str = "oracle_cards") -> str:
-    """One dataset's updated_at, validated, or a refusal."""
+def unique_entry(payload: dict, kind: str) -> dict:
+    """The one bulk entry of `kind`, or a refusal.
+
+    EXACTLY one. Every reader of this response used to take the first match
+    while the builder's URI table took the last, so a response carrying two
+    `oracle_cards` entries would download the second dataset and stamp it
+    with the first one's timestamp — a corpus published under a release id
+    describing data it does not contain, passing the publish-time tag
+    comparison because both sides agreed on the wrong stamp. Neither
+    first-wins nor last-wins is defensible here; the only safe reading of a
+    duplicated dataset type is that the response is not one we understand.
+    """
     entries = payload.get("data")
     if not isinstance(entries, list):
         raise StampError("bulk-data response has no data array")
-    for entry in entries:
-        if isinstance(entry, dict) and entry.get("type") == kind:
-            stamp = entry.get("updated_at")
-            # Not just truthiness. A blank or malformed value used to pass
-            # through and then match a substring of almost any release body,
-            # turning the change check into a permanent false "nothing new".
-            if not isinstance(stamp, str) or not _ISO.fullmatch(stamp.strip()):
-                raise StampError(
-                    f"{kind} updated_at is not an ISO timestamp: {stamp!r}")
-            return stamp.strip()
-    raise StampError(f"no {kind} entry in the bulk-data response")
+    matches = [e for e in entries if isinstance(e, dict) and e.get("type") == kind]
+    if not matches:
+        raise StampError(f"no {kind} entry in the bulk-data response")
+    if len(matches) > 1:
+        raise StampError(
+            f"bulk-data response carries {len(matches)} {kind!r} entries; "
+            "refusing to guess which one is authoritative")
+    return matches[0]
+
+
+def extract(payload: dict, kind: str = "oracle_cards") -> str:
+    """One dataset's updated_at, validated, or a refusal."""
+    stamp = unique_entry(payload, kind).get("updated_at")
+    # Not just truthiness. A blank or malformed value used to pass
+    # through and then match a substring of almost any release body,
+    # turning the change check into a permanent false "nothing new".
+    if not isinstance(stamp, str) or not _ISO.fullmatch(stamp.strip()):
+        raise StampError(
+            f"{kind} updated_at is not an ISO timestamp: {stamp!r}")
+    return stamp.strip()
 
 
 def extract_all(payload: dict) -> dict[str, str]:

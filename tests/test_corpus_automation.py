@@ -6,6 +6,7 @@ something subtly wrong, because every other check in the pipeline asks about
 integrity and identity, and none of them asks whether the corpus is any good.
 """
 import json
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -35,20 +36,44 @@ def _corpus(path: Path, *, rules=3000, glossary=600, cards=30000,
         # exercise the failure path while appearing to test the happy one.
         "CREATE VIRTUAL TABLE rules_fts USING fts5(rule_id, text);"
         "CREATE VIRTUAL TABLE cards_fts USING fts5(name, oracle_id UNINDEXED);")
+    # The indexes must index the TABLES, not merely have the right number of
+    # rows: a reviewer built a corpus whose rules_fts was correctly sized and
+    # full of unrelated text, and the server answered "no rules match" for a
+    # phrase present in every rule. A fixture standing in for a healthy corpus
+    # has to be searchable the way a real one is.
+    names = ["Island", "Forest", "Mountain", "Plains", "Swamp",
+             "Lightning Bolt", "Counterspell", "Llanowar Elves"]
+
+    def _card_name(i: int) -> str:
+        return names[i] if i < len(names) else f"Card {i}"
+
     con.executemany("INSERT INTO rules_fts VALUES (?,?)",
                     [(str(i), "rule text") for i in range(rules)])
+    con.executemany("INSERT INTO rules_fts VALUES (?,?)",
+                    [(rid, "anchor rule text") for rid in ("100.1", "702.2")])
     con.executemany("INSERT INTO cards_fts VALUES (?,?)",
-                    [("n", str(i)) for i in range(cards)])
+                    [(_card_name(i), str(i)) for i in range(cards)])
     con.executemany(
         "INSERT INTO rules VALUES (?,?,?,?)",
         [(str(i), str(i) if i < subrules else None,
           "" if i < empty_text else "rule text", "") for i in range(rules)])
+    # The anchor rules the checker requires. A fixture standing in for a real
+    # corpus has to contain what a real corpus contains, or the happy-path
+    # test is only asserting that the checker is lenient.
+    con.executemany("INSERT INTO rules VALUES (?,?,?,?)",
+                    [(rid, None, "anchor rule text", "")
+                     for rid in ("100.1", "702.2")])
     con.executemany("INSERT INTO glossary VALUES (?,?)",
                     [(str(i), "d") for i in range(glossary)])
-    con.executemany("INSERT INTO cards VALUES (?,?,?)",
-                    [(str(i), f"Card {i}", "rules text") for i in range(cards)])
+    con.executemany(
+        "INSERT INTO cards VALUES (?,?,?)",
+        [(str(i), _card_name(i), "rules text") for i in range(cards)])
+    # Every ruling points at a card that exists: an unreachable ruling is the
+    # exact defect the linkage check exists to catch, so the healthy fixture
+    # must not contain any.
     con.executemany("INSERT INTO rulings VALUES (?,?)",
-                    [(str(i), "c") for i in range(rulings)])
+                    [(str(i % cards) if cards else None, "c")
+                     for i in range(rulings)])
     con.execute("INSERT INTO meta VALUES ('cr_effective_date', ?)", (effective,))
     con.commit()
     con.close()
@@ -142,7 +167,7 @@ def test_the_tag_distinguishes_a_cards_only_rebuild(tmp_path):
         con.close()
 
     assert release_id(a)["tag"] != release_id(b)["tag"]
-    assert release_id(a)["tag"] == "cr-20260619-cards-20260807T090315"
+    assert release_id(a)["tag"] == "cr-20260619-cards-20260807T090315-sb047af9cb00fd108"
 
 
 def test_the_release_id_comes_from_the_corpus_not_a_fresh_lookup(tmp_path):
@@ -159,7 +184,7 @@ def test_the_release_id_comes_from_the_corpus_not_a_fresh_lookup(tmp_path):
     con.close()
     info = release_id(path)
     assert info["cr_effective_date"] == "August 7, 2026"
-    assert info["tag"] == "cr-20260807-cards-20260807T090315"
+    assert info["tag"] == "cr-20260807-cards-20260807T090315-sb047af9cb00fd108"
 
 
 @pytest.mark.parametrize("effective", ["unknown", "", "sometime in June"])
@@ -689,6 +714,26 @@ def test_the_private_workflow_never_deletes_on_an_unproven_absence():
             continue
         start = max([s for s in step_starts if s <= i], default=0)
         before = "\n".join(lines[start:i])
+        # Two ways a deletion can be legitimate, and only two.
+        #
+        # The rule this test enforces is about deleting something whose state
+        # was INFERRED — a tag believed abandoned because a release lookup
+        # failed. There the 404 must be a parsed status, because a failed
+        # lookup that is not a 404 means "we do not know", and not knowing
+        # must never authorise a delete.
+        #
+        # Deleting an object this step just created is a different act. The
+        # authority comes from having made it and still holding its id, not
+        # from a lookup, so demanding a 404 there would be cargo-culting the
+        # shape of the rule past the reason for it. It is still pinned: the
+        # id must come from a creation in this same step.
+        # The URL usually sits on a backslash continuation, so the target is
+        # read from the statement, not from the line carrying the verb.
+        statement = "\n".join(lines[i:i + 4])
+        target_is_own_creation = (
+            "releases/$created" in statement and "created=$(gh api" in before)
+        if target_is_own_creation:
+            continue
         assert "404" in before, (
             f"the DELETE at line {i + 1} is not preceded in its own step by a "
             "404 check; a failed lookup must never authorise a deletion")
@@ -791,13 +836,551 @@ def test_a_404_assignment_does_not_kill_the_step_under_the_runner_shell():
     assert done.returncode == 0 and done.stdout.strip() == "reached-404"
 
 
-def test_the_workflow_guards_every_status_assignment():
+def _logical_lines(text: str) -> list[str]:
+    """Backslash continuations joined into one line each.
+
+    This used to be inline in the test below, which accepted any line ending
+    in a backslash — so a multi-line assignment with no guard anywhere in it
+    passed. A reviewer removed the `|| true` from a wrapped assignment and
+    the test stayed green.
+    """
+    logical: list[str] = []
+    pending = ""
+    for line in text.splitlines():
+        s = line.strip()
+        if s.endswith("\\"):
+            pending += s[:-1].rstrip() + " "
+            continue
+        logical.append((pending + s).strip())
+        pending = ""
+    if pending:
+        logical.append(pending.strip())
+    return logical
+
+
+# Any assignment from a command substitution, wherever it sits on the line.
+# NOT a list of variable names: the previous version enumerated four
+# (`status`, `now`, `still`, `final`), and a reviewer removed the guard from
+# `rel=$(gh api -i ...)` — a fifth name — leaving the test reporting "five
+# checked, zero offenders" while a runner-shell reproduction exited 1 on a
+# 404. Whitespace defeated it too: `status=$( \` + newline joins to
+# `status=$( gh api`, which does not start with `status=$(gh api`. And every
+# new assignment added in ordinary maintenance was unchecked by construction.
+_ASSIGNMENT = re.compile(r"(?<![\w$])(?:export\s+|local\s+)?[A-Za-z_]\w*=\$\(")
+_GH_API = re.compile(r"gh\s+api\b")
+
+# The escape hatch, deliberately explicit and deliberately noisy. Two calls
+# in this workflow CREATE things (the tag object, the draft release) and must
+# kill the step if they fail — guarding them would turn a failed reservation
+# into a silent one. That is a real exemption, so it is written down at the
+# call rather than inferred from the variable's name.
+_EXEMPTION = "# unguarded-gh-api:"
+
+# The number present when this test was last revised. Asserted as a FLOOR so
+# that a matcher which stops matching fails loudly instead of silently
+# checking nothing — the failure mode of every version of this test so far.
+_KNOWN_GH_API_ASSIGNMENTS = 16
+
+
+def _unguarded_gh_api_assignments(text: str) -> tuple[list[str], int]:
+    """(offenders, total found). An offender is an assignment from a `gh api`
+    command substitution that neither carries a `||` fallback nor sits under
+    an explicit exemption comment.
+
+    `bash -e` is why: GitHub runs every step under it, so `x=$(gh api ...)`
+    kills the step outright when the API returns 404 — the expected outcome
+    of several lookups here. That regression already happened once, stranding
+    a tag reservation and killing the cleanup step that would have released
+    it.
+    """
+    logical = _logical_lines(text)
+
+    def _is_assignment(s: str) -> bool:
+        m = _ASSIGNMENT.search(s)
+        return bool(m and _GH_API.search(s[m.end():]))
+
+    # Each exemption comment covers exactly ONE assignment: the next one,
+    # with no blank line between them. One marker cannot silently cover a
+    # second call added under it later, and a marker that covers nothing at
+    # all is itself reported — a stale exemption left behind when the call it
+    # excused was rewritten is how this kind of annotation rots.
+    exempt: set[int] = set()
+    orphaned: list[str] = []
+    for j, s in enumerate(logical):
+        if not s.startswith(_EXEMPTION):
+            continue
+        target = None
+        for k in range(j + 1, len(logical)):
+            if not logical[k]:
+                break
+            if _is_assignment(logical[k]) and k not in exempt:
+                target = k
+                break
+        if target is None:
+            orphaned.append(f"exemption covers no gh api assignment: {s}")
+        else:
+            exempt.add(target)
+
+    offenders: list[str] = list(orphaned)
+    found = 0
+    for i, s in enumerate(logical):
+        if not _is_assignment(s):
+            continue
+        found += 1
+        # The fallback has to come after the call it is guarding; a `||`
+        # earlier on the line is guarding something else.
+        m = _ASSIGNMENT.search(s)
+        gh_at = _GH_API.search(s[m.end():]).end() + m.end()
+        if "||" in s[gh_at:] or i in exempt:
+            continue
+        offenders.append(s)
+    return offenders, found
+
+
+def test_the_workflow_guards_every_gh_api_assignment():
     workflow = (ROOT.parent / "casa-mtg-corpus" /
                 ".github" / "workflows" / "build-corpus.yml")
     if not workflow.exists():
         pytest.skip("private build repository not checked out here")
-    for line in workflow.read_text().splitlines():
-        s = line.strip()
-        if s.startswith(("status=$(gh api", "now=$(gh api")):
-            assert s.endswith(("|| true", "\\")) or "|| now=" in s, (
-                f"unguarded assignment from a gh call that can 404: {s}")
+    offenders, found = _unguarded_gh_api_assignments(workflow.read_text())
+    assert not offenders, (
+        "assignments from a gh call that can 404, with no fallback and no "
+        f"{_EXEMPTION} exemption:\n" + "\n".join(offenders))
+    assert found >= _KNOWN_GH_API_ASSIGNMENTS, (
+        f"only {found} gh api assignments matched, down from "
+        f"{_KNOWN_GH_API_ASSIGNMENTS}; the matcher has stopped matching and "
+        "this test is now checking nothing")
+
+
+@pytest.mark.parametrize("why,line", [
+    ("a variable name the old prefix list did not enumerate",
+     'rel=$(gh api -i "repos/$R/releases/tags/$t" 2>&1)'),
+    ("whitespace between the substitution and the command",
+     'status=$( gh api "repos/$R/releases/tags/$t")'),
+    ("an assignment added in ordinary maintenance",
+     'whatever=$(gh api "repos/$R/git/ref/tags/$t" --jq .object.sha)'),
+    ("a guard that fires before the call rather than after it",
+     'x=$(false || true; gh api "repos/$R/releases")'),
+])
+def test_the_guard_scanner_catches_the_ways_past_the_old_one(why, line):
+    """Each of these was demonstrated against the previous version, which
+    matched four literal variable-name prefixes and reported success over an
+    unguarded call."""
+    offenders, found = _unguarded_gh_api_assignments(f"        {line}\n")
+    assert found == 1, why
+    assert offenders == [line], why
+
+
+def test_removing_any_single_guard_from_the_real_workflow_is_caught():
+    """The mutation check, kept rather than re-run by hand: strip the
+    fallback from each guarded assignment in turn and confirm the scanner
+    names that one. Without this, the scanner could be silently narrowed
+    back to something that matches everything and objects to nothing."""
+    workflow = (ROOT.parent / "casa-mtg-corpus" /
+                ".github" / "workflows" / "build-corpus.yml")
+    if not workflow.exists():
+        pytest.skip("private build repository not checked out here")
+    logical = _logical_lines(workflow.read_text())
+    base, found = _unguarded_gh_api_assignments(workflow.read_text())
+    assert not base and found >= _KNOWN_GH_API_ASSIGNMENTS
+
+    mutated = 0
+    for i, s in enumerate(logical):
+        m = _ASSIGNMENT.search(s)
+        if not m or not _GH_API.search(s[m.end():]) or "||" not in s:
+            continue
+        stripped = re.sub(r"\s*\|\|.*$", "", s)
+        offenders, _ = _unguarded_gh_api_assignments(
+            "\n".join(logical[:i] + [stripped] + logical[i + 1:]))
+        assert stripped in offenders, f"removing the guard went unnoticed: {s}"
+        mutated += 1
+    assert mutated >= 13, (
+        f"only {mutated} guarded assignments were mutated; the workflow's "
+        "guards are not where this test thinks they are")
+
+
+def test_rulings_that_reference_no_card_are_refused():
+    """A reviewer built a corpus with 60,000 well-formed ruling comments whose
+    oracle_id was uniformly NULL and it passed clean. get_rulings joins on
+    oracle_id, so every one of those rulings is unreachable — the corpus
+    answers "no rulings" for every card while satisfying the row-count floor
+    and the blank-comment tolerance."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = _corpus(Path(d) / "c.sqlite")
+        con = sqlite3.connect(path)
+        con.execute("UPDATE rulings SET oracle_id = NULL")
+        con.commit()
+        con.close()
+        found = problems(path)
+    assert any("carry no oracle_id" in p for p in found), found
+
+
+def test_rulings_pointing_at_absent_cards_are_refused():
+    """The two datasets have to belong to each other. Rulings paired with a
+    card set they do not describe join to nothing, which looks identical to a
+    healthy corpus from every count-based angle."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = _corpus(Path(d) / "c.sqlite")
+        con = sqlite3.connect(path)
+        con.execute("UPDATE rulings SET oracle_id = 'no-such-' || oracle_id")
+        con.commit()
+        con.close()
+        found = problems(path)
+    assert any("absent from cards" in p for p in found), found
+
+
+def test_a_syntactically_perfect_feed_of_invented_cards_is_refused():
+    """Every shape check passes on fabricated data: the counts are right, the
+    columns are populated, the indexes are proportionate. What a substituted
+    dataset cannot have is the cards that have been in print for thirty
+    years."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = _corpus(Path(d) / "c.sqlite")
+        con = sqlite3.connect(path)
+        con.execute("UPDATE cards SET name = 'Invented ' || oracle_id")
+        con.commit()
+        con.close()
+        found = problems(path)
+    assert any("anchor cards" in p for p in found), found
+
+
+def test_numbered_garbage_without_the_anchor_rules_is_refused():
+    """Rules numbered plausibly and filled with text satisfy the count, the
+    non-empty check and the subrule shape. CR 100.1 and 702.2 have been
+    numbered the same for the life of the document."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = _corpus(Path(d) / "c.sqlite")
+        con = sqlite3.connect(path)
+        con.execute("DELETE FROM rules WHERE rule_id IN ('100.1', '702.2')")
+        con.commit()
+        con.close()
+        found = problems(path)
+    assert sum("does not look like the Comprehensive Rules" in p
+               for p in found) == 2, found
+
+
+def test_an_index_of_unrelated_text_is_refused():
+    """A reviewer built a corpus whose rules_fts had exactly the right number
+    of rows and indexed unrelated text. It passed every count and ratio check,
+    and the server then answered "no rules match" for a phrase present in
+    every single rule. Quantity is not correspondence."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = _corpus(Path(d) / "c.sqlite")
+        con = sqlite3.connect(path)
+        con.execute("DELETE FROM rules_fts")
+        con.executemany(
+            "INSERT INTO rules_fts VALUES (?,?)",
+            [(str(i), "unrelated filler") for i in range(3002)])
+        con.commit()
+        con.close()
+        found = problems(path)
+    assert any("does not index rules" in p for p in found), found
+
+
+def test_a_card_index_of_unrelated_text_is_refused():
+    """Same hole on the card side: every name lookup fails while the index
+    looks correctly sized."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = _corpus(Path(d) / "c.sqlite")
+        con = sqlite3.connect(path)
+        con.execute("DELETE FROM cards_fts")
+        con.executemany(
+            "INSERT INTO cards_fts VALUES (?,?)",
+            [("zzzz", str(i)) for i in range(30000)])
+        con.commit()
+        con.close()
+        found = problems(path)
+    assert any("does not index cards" in p for p in found), found
+
+
+def test_the_readme_test_count_matches_the_suite():
+    """The README has claimed 202, 210, 214 and 220 tests at various points,
+    each time because someone updated the suite and not the sentence. It is a
+    small thing, but it is the sort of small thing a reader uses to judge
+    whether the rest of the document was checked."""
+    import re
+    import subprocess
+
+    readme = (ROOT / "README.md").read_text()
+    m = re.search(r"^(\d+) tests, no network", readme, re.M)
+    assert m, "README no longer states a test count in the expected shape"
+    claimed = int(m.group(1))
+
+    run = subprocess.run(
+        [sys.executable, "-m", "pytest", str(ROOT / "tests"), "-q",
+         "--collect-only"],
+        capture_output=True, text=True, cwd=ROOT)
+    # The return code matters: a collection error also prints a count, and
+    # parsing stdout alone would compare the README against a partial suite.
+    assert run.returncode == 0, (
+        f"collection failed ({run.returncode}):\n{run.stdout[-600:]}")
+    out = run.stdout
+    n = re.search(r"^(\d+) tests collected", out, re.M)
+    assert n, f"could not read a collected count from pytest:\n{out[-400:]}"
+    assert claimed == int(n.group(1)), (
+        f"README says {claimed} tests; the suite collects {n.group(1)}")
+
+
+def test_two_snapshots_in_the_same_second_get_different_tags():
+    """The readable stamp is truncated to whole seconds, so two genuinely
+    different Scryfall snapshots produced one tag. The plan then reserves
+    snapshot A's tag, the builder downloads snapshot B, and the publish-time
+    comparison agrees because both sides computed the same wrong name."""
+    from corpus_release_id import tag_from_inputs
+
+    common = dict(cr="20260807", rulings="2026-08-07T09:00:38+00:00",
+                  builder="bf025fc9aa")
+    a = tag_from_inputs(oracle="2026-08-07T09:03:15.100+00:00", **common)
+    b = tag_from_inputs(oracle="2026-08-07T09:03:15.900+00:00", **common)
+    assert a != b, f"both snapshots named {a}"
+
+
+def test_one_instant_expressed_two_ways_gets_one_tag():
+    """The mirror of the above: an offset change alone must not rename a
+    release, or the same snapshot would be published twice."""
+    from corpus_release_id import tag_from_inputs
+
+    common = dict(cr="20260807", builder="bf025fc9aa")
+    utc = tag_from_inputs(oracle="2026-08-07T09:03:15.100+00:00",
+                          rulings="2026-08-07T09:00:38Z", **common)
+    plus2 = tag_from_inputs(oracle="2026-08-07T11:03:15.100+02:00",
+                            rulings="2026-08-07T11:00:38+02:00", **common)
+    assert utc == plus2, f"{utc} != {plus2}"
+
+
+@pytest.mark.parametrize("a,b,same,why", [
+    ("2026-08-07T09:03:15.100Z", "2026-08-07T09:03:15.900Z", False,
+     "sub-second snapshots are different snapshots"),
+    ("2026-08-07T09:03:15.1000001Z", "2026-08-07T09:03:15.1000009Z", False,
+     "precision beyond what datetime models still distinguishes moments"),
+    ("2026-08-07T11:03:15.1+02:00", "2026-08-07T09:03:15.100Z", True,
+     "one instant written two ways is one snapshot"),
+    ("2026-08-07", "2026-08-07T00:00:00Z", True,
+     "the bare-date fallback means midnight, not a shape of its own"),
+    ("2026-08-07T09:03:15.1Z", "2026-08-07T09:03:15.1000Z", True,
+     "trailing zeros carry no information"),
+    ("2026-08-07T09:03:15Z", "2026-08-07T09:03:15.5Z", False,
+     "no fraction is not the same as some fraction"),
+])
+def test_release_tag_identity(a, b, same, why):
+    """Two properties, and both have been broken: different snapshots must
+    never share a tag (the plan reserves one snapshot's name while the builder
+    downloads another, and the publish-time comparison agrees because both
+    sides computed the same wrong string), and one snapshot must never produce
+    two (the same corpus published twice under different names)."""
+    from corpus_release_id import tag_from_inputs
+
+    common = dict(cr="20260807", rulings="2026-08-07T09:00:38Z",
+                  builder="bf025fc9aa1234")
+    ta = tag_from_inputs(oracle=a, **common)
+    tb = tag_from_inputs(oracle=b, **common)
+    assert (ta == tb) is same, f"{why}: {ta} vs {tb}"
+
+
+def test_the_release_tag_suffix_is_wide_enough_to_not_collide():
+    """A reviewer collided the 32-bit suffix by deterministic search after
+    126,930 candidates — two snapshots, one tag. The birthday bound on 64 bits
+    puts that out of reach; this pins the width so it cannot be trimmed back
+    for tidiness."""
+    from corpus_release_id import tag_from_inputs
+
+    tag = tag_from_inputs(cr="20260807", oracle="2026-08-07T09:03:15Z",
+                          builder="bf025fc9aa1234")
+    suffix = tag.rsplit("-s", 1)[1]
+    assert len(suffix) == 16, f"suffix {suffix!r} is {len(suffix) * 4} bits"
+
+    # And the search that found the old collision finds nothing here.
+    seen = {}
+    for micro in range(200000):
+        stamp = f"2026-08-07T09:03:{micro // 1000000 % 60:02d}.{micro % 1000000:06d}Z"
+        t = tag_from_inputs(cr="20260807", oracle=stamp, builder="b")
+        assert t not in seen, f"collision: {stamp} and {seen[t]}"
+        seen[t] = stamp
+
+
+def _fts_attack_corpus(tmp_path, damage: str):
+    """A healthy fixture corpus with its index damaged.
+
+    Built from the FIXTURE, not from a real corpus. The first version of
+    these tests required plugins/mtg/data/corpus.sqlite and skipped without
+    it — so in the public repository, which contains no corpus by design and
+    is the only place this code ships from, all four skipped and CI went
+    green over the very protection they exist to hold in place. That is the
+    third time a check in this repository has reported success while
+    exercising nothing.
+
+    The claim that justified it — that a synthetic fixture cannot express
+    these defects — was simply wrong: the fixture creates genuine fts5
+    virtual tables, so it has a genuine inverted index to damage.
+    """
+    path = _corpus(tmp_path / "damaged.sqlite")
+    con = sqlite3.connect(path)
+    con.executescript(damage)
+    con.commit()
+    con.close()
+    return path
+
+
+@pytest.mark.parametrize("name,expected,damage", [
+    ("virtual table swapped for an ordinary one", "cannot be searched", """
+        CREATE TABLE rsrc AS SELECT rule_id, text FROM rules_fts;
+        DROP TABLE rules_fts;
+        CREATE TABLE rules_fts(rule_id TEXT, text TEXT);
+        INSERT INTO rules_fts SELECT rule_id, text FROM rsrc;
+        DROP TABLE rsrc;"""),
+    ("shadow index blocks deleted", "cannot be searched",
+     "DELETE FROM rules_fts_data WHERE id > 1;"),
+    ("external content echoing an empty index", "not a working index", """
+        CREATE TABLE rsrc(rule_id TEXT, text TEXT);
+        INSERT INTO rsrc SELECT rule_id, text FROM rules;
+        DROP TABLE rules_fts;
+        CREATE VIRTUAL TABLE rules_fts USING fts5(rule_id, text, content='rsrc');"""),
+])
+def test_an_index_that_cannot_be_searched_is_refused(tmp_path, name, expected,
+                                                     damage):
+    """Reading the columns an FTS table exposes as content is not reading the
+    inverted index, and the two can part company. Every one of these passed a
+    checker that compared stored strings: the content was right in each case
+    and MATCH returned nothing, raised "no such column", or reported the
+    database malformed — which the server renders to the user as
+    "no rules match".
+
+    Asserted on the PROBE'S OWN finding, not on the existence of any finding.
+    `assert problems(...)` looked equivalent and was not: deleting the shadow
+    blocks breaks the virtual table early enough that the row-count and
+    content checks fail on it too, so that case kept passing when a reviewer
+    deleted the probe it exists to pin. A test that survives the removal of
+    the thing it tests is the same defect this file is full of tests for.
+    """
+    found = problems(_fts_attack_corpus(tmp_path, damage))
+    assert any(expected in p for p in found), f"{name}: {found}"
+
+
+def test_an_index_covering_only_the_rows_a_probe_would_reach_is_refused(tmp_path):
+    """Both reviewers built this one. An external-content index that exposes
+    every row but holds postings for only the first 300 defeats any probe
+    with a fixed bound — which is what the previous version had, 300 rows,
+    the same predictable-prefix mistake that had just been removed from the
+    correspondence check. Roughly 90% of rules had no postings and the
+    corpus was declared healthy."""
+    path = _fts_attack_corpus(tmp_path, """
+        CREATE TABLE rsrc(rule_id TEXT, text TEXT);
+        INSERT INTO rsrc SELECT rule_id, text FROM rules;
+        DROP TABLE rules_fts;
+        CREATE VIRTUAL TABLE rules_fts USING fts5(rule_id, text, content='rsrc');
+        INSERT INTO rules_fts(rowid, rule_id, text)
+            SELECT rowid, rule_id, text FROM rsrc WHERE rowid <= 300;""")
+    found = problems(path)
+    assert any("not a working index" in p for p in found), found
+
+
+def test_an_unindexable_key_does_not_excuse_a_missing_posting(tmp_path):
+    """A reviewer found this in the fix that introduced the exemption.
+
+    The keyed probe puts the row's key in the query as well as its text, so a
+    key that tokenises to nothing makes the row unfindable BY THE PROBE
+    however complete the index is. The first version read that as "the value
+    is unindexable" and excused the row — so a rule whose id tokenises to
+    nothing, whose text tokenises perfectly well, and whose posting had been
+    removed was reported as unindexable text and the corpus passed clean.
+    The key is a property of the probe, not of the data.
+    """
+    path = _fts_attack_corpus(tmp_path, """
+        UPDATE rules SET rule_id = '_' WHERE rule_id = '5';
+        CREATE TABLE rsrc(rule_id TEXT, text TEXT);
+        INSERT INTO rsrc SELECT rule_id, text FROM rules;
+        DROP TABLE rules_fts;
+        CREATE VIRTUAL TABLE rules_fts USING fts5(rule_id, text, content='rsrc');
+        INSERT INTO rules_fts(rowid, rule_id, text)
+            SELECT rowid, rule_id, text FROM rsrc WHERE rule_id != '_';""")
+    found = problems(path)
+    assert any("not a working index" in p for p in found), found
+
+
+def test_an_unindexable_key_whose_posting_is_present_is_still_accepted(tmp_path):
+    """The other direction, and the one that makes the fix above safe to
+    apply: re-probing without the key must FIND the row when the index really
+    does hold it. Refusing here would be the failure this gate has had twice
+    already — rejecting a corpus that is perfectly good."""
+    path = _fts_attack_corpus(tmp_path, """
+        UPDATE rules SET rule_id = '_' WHERE rule_id = '5';
+        CREATE TABLE rsrc(rule_id TEXT, text TEXT);
+        INSERT INTO rsrc SELECT rule_id, text FROM rules;
+        DROP TABLE rules_fts;
+        CREATE VIRTUAL TABLE rules_fts USING fts5(rule_id, text, content='rsrc');
+        INSERT INTO rules_fts(rowid, rule_id, text)
+            SELECT rowid, rule_id, text FROM rsrc;""")
+    assert problems(path) == []
+
+
+def test_deleting_the_searchability_probe_makes_a_damaged_corpus_pass(tmp_path):
+    """The mutation check, kept rather than re-run by hand.
+
+    Every other test in this group asserts that a damaged corpus is refused.
+    None of them can say whether the probe is what refuses it — a reviewer
+    deleted the probe from the checker, re-ran them, and one kept passing on
+    findings raised by unrelated checks. So run the mutation here: excise the
+    probe, and require that the checker then ACCEPTS an index that holds no
+    postings at all. If this test starts failing, either the markers moved or
+    some other check has grown to cover this, and the answer is to find out
+    which rather than to relax it.
+    """
+    source = (ROOT / "scripts" / "check_corpus_plausible.py").read_text()
+    lines = source.splitlines(keepends=True)
+    begin = [i for i, l in enumerate(lines) if "BEGIN searchability probe" in l]
+    end = [i for i, l in enumerate(lines) if "END searchability probe" in l]
+    assert len(begin) == 1 and len(end) == 1 and begin[0] < end[0], (
+        "the searchability probe markers are gone; this test cannot excise "
+        "what it cannot find")
+    without_probe = "".join(lines[:begin[0]] + lines[end[0] + 1:])
+
+    module: dict = {"__name__": "check_corpus_plausible_without_probe"}
+    exec(compile(without_probe, "check_corpus_plausible.py<no probe>", "exec"),
+         module)
+
+    path = _fts_attack_corpus(tmp_path, """
+        CREATE TABLE rsrc(rule_id TEXT, text TEXT);
+        INSERT INTO rsrc SELECT rule_id, text FROM rules;
+        DROP TABLE rules_fts;
+        CREATE VIRTUAL TABLE rules_fts USING fts5(rule_id, text, content='rsrc');""")
+    assert module["problems"](path) == [], (
+        "an index with no postings was still refused without the probe, so "
+        "the FTS tests above are not pinning the probe they name")
+    # And the unmutated checker does refuse it — otherwise the mutation
+    # above proves nothing about the code that actually ships.
+    assert any("not a working index" in p for p in problems(path))
+
+
+def test_the_real_corpus_passes_when_one_is_present(tmp_path):
+    """The check that matters most, and the one a previous version failed: a
+    gate that rejects the only known-good input would have blocked every
+    build. It rejected the real corpus twice — over a trailing space, then
+    over tokenisation. This can only run where a corpus has been built, so
+    it is a bonus on top of the fixture-based cases above rather than the
+    protection itself."""
+    real = ROOT / "plugins" / "mtg" / "data" / "corpus.sqlite"
+    if not real.is_file():
+        pytest.skip("no built corpus here; the fixture cases carry the coverage")
+    assert problems(real) == []
+
+
+def test_builder_revisions_sharing_a_prefix_get_different_tags():
+    """The readable part carries a prefix of the builder revision, so two
+    revisions agreeing on it produced one tag. A parser fix over unchanged
+    upstream data yields a different corpus, and naming it identically is
+    precisely what the builder component exists to prevent — the earlier test
+    used revisions differing at the first character and never exercised the
+    truncation."""
+    from corpus_release_id import tag_from_inputs
+
+    common = dict(cr="20260807", oracle="2026-08-07T09:03:15Z",
+                  rulings="2026-08-07T09:00:38Z")
+    a = tag_from_inputs(builder="aaaaaaaaaaaa" + "1" * 28, **common)
+    b = tag_from_inputs(builder="aaaaaaaaaaaa" + "2" * 28, **common)
+    assert a != b, f"both builder revisions named {a}"

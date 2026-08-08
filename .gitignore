@@ -31,3 +31,6 @@ __pycache__/
 
 # The publication checklist is for this repository, not the published one.
 PUBLISH.md
+
+# Cross-session handover notes. Read, act, delete — never committed.
+LIVE-EXERCISE-*.md

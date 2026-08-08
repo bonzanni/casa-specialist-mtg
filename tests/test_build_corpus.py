@@ -6,10 +6,12 @@ import pytest
 
 from scripts.build_corpus import (
     build,
+    bulk_uris,
     parse_cr,
     parse_glossary,
     split_cr_sections,
 )
+from scripts.scryfall_stamp import StampError, extract
 
 # Fixtures are INVENTED rules in the Comprehensive Rules' format, never
 # excerpts of it. The parser cares about shape — numbering, subrule letters,
@@ -327,31 +329,66 @@ def test_build_excludes_art_series_layout(tmp_path):
     assert any(r[0] == "oid-real" for r in aliases)
 
 
-def test_bulk_data_without_a_jsonl_uri_fails_loudly(tmp_path, monkeypatch):
+def _bulk(*entries: dict) -> dict:
+    return {"data": list(entries)}
+
+
+def _entry(kind: str, uri: str) -> dict:
+    return {"type": kind, "jsonl_download_uri": uri,
+            "updated_at": "2026-08-07T21:03:29.000+00:00"}
+
+
+def test_bulk_data_without_a_jsonl_uri_fails_loudly():
     """Scryfall replaced `download_uri` with `jsonl_download_uri`, and the
     builder died with a bare KeyError deep inside a comprehension — which
     reads as a bug in us rather than a schema change upstream. The next one
-    should say what happened."""
-    import build_corpus
+    should say what happened.
 
-    old_shape = {"data": [{"type": "oracle_cards",
-                           "download_uri": "https://example/old.json"}]}
-    entries = old_shape["data"]
+    This calls the real resolver. It used to re-implement the loop inline,
+    which meant it went on passing after the production code it was standing
+    in for had been rewritten."""
+    old_shape = _bulk({"type": "oracle_cards",
+                       "download_uri": "https://example/old.json"},
+                      _entry("rulings", "https://example/r.jsonl"))
     with pytest.raises(SystemExit, match="jsonl_download_uri"):
-        uris = {}
-        for b in entries:
-            if "jsonl_download_uri" not in b:
-                raise SystemExit(
-                    f"bulk entry {b.get('type')!r} has no jsonl_download_uri; "
-                    "Scryfall's bulk-data schema has changed again")
-            uris[b["type"]] = b["jsonl_download_uri"]
+        bulk_uris(old_shape)
+
+
+def test_a_duplicated_dataset_type_is_refused_rather_than_resolved():
+    """The URI table was last-wins and every timestamp reader was first-wins.
+    A response carrying two `oracle_cards` entries therefore downloaded the
+    second dataset and stamped it with the first one's timestamp — publishing
+    a corpus under a release id describing data it does not contain, and
+    passing the publish-time tag comparison because both sides agreed on the
+    same wrong stamp. There is no honest way to pick, so neither side does."""
+    two = _bulk(_entry("oracle_cards", "https://example/first.jsonl"),
+                _entry("rulings", "https://example/r.jsonl"),
+                _entry("oracle_cards", "https://example/second.jsonl"))
+    with pytest.raises(SystemExit, match="2 'oracle_cards' entries"):
+        bulk_uris(two)
+
+    # The stamp side must refuse the same response, not merely differ from it.
+    with pytest.raises(StampError, match="2 'oracle_cards' entries"):
+        extract(two, "oracle_cards")
+
+
+def test_a_missing_required_dataset_is_refused():
+    with pytest.raises(SystemExit, match="no 'rulings' entry"):
+        bulk_uris(_bulk(_entry("oracle_cards", "https://example/o.jsonl")))
+
+
+def test_all_cards_stays_optional():
+    """Only --with-it-aliases needs it; a response without it is normal."""
+    uris = bulk_uris(_bulk(_entry("oracle_cards", "https://example/o.jsonl"),
+                           _entry("rulings", "https://example/r.jsonl")))
+    assert set(uris) == {"oracle_cards", "rulings"}
 
 
 def test_jsonl_is_streamed_and_a_bad_line_is_fatal(tmp_path):
     """Skipping a malformed line would drop cards silently, and the corpus
     would answer "not found" for whatever fell out — a wrong answer delivered
     confidently, which is the failure this component exists to prevent."""
-    from build_corpus import _iter_jsonl
+    from scripts.build_corpus import _iter_jsonl
 
     good = tmp_path / "good.jsonl"
     good.write_text('{"a": 1}\n\n{"a": 2}\n')

@@ -24,11 +24,19 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+
+# One grammar for every timestamp this repository accepts, so the readable
+# stamp and the identity digest can never disagree about what a string means.
+_INSTANT = re.compile(
+    r"(?:(?P<date>\d{4}-\d{2}-\d{2})"
+    r"|(?P<whole>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})"
+    r"(?P<frac>\.\d+)?(?P<off>Z|z|[+-]\d{2}:?\d{2})?)")
 
 _MONTHS = ("january february march april may june july august september "
            "october november december").split()
@@ -53,16 +61,74 @@ def _scryfall_stamp(updated_at: str) -> str:
     second build either skipped as already-done or collided with an existing
     asset and refused. Identity has to be at least as precise as the thing it
     identifies.
+
+    In UTC. Reading the wall-clock digits out of the string meant an offset
+    change alone renamed the release: 11:03:15+02:00 and 09:03:15Z are one
+    moment and must not produce two tags for one snapshot.
+
+    A bare date reads as midnight UTC rather than as its own shape, so the
+    fallback and the same instant written out in full name one release.
+
+    Derived from _canonical_instant so the readable stamp and the identity
+    digest cannot disagree about what a string means.
     """
-    text = updated_at.strip()
-    m = re.match(r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})", text)
-    if m:
-        return f"{m.group(1)}{m.group(2)}{m.group(3)}T{m.group(4)}{m.group(5)}{m.group(6)}"
-    # Older builds fell back to a bare build date for this field.
-    try:
-        return datetime.strptime(text, "%Y-%m-%d").strftime("%Y%m%d")
-    except ValueError:
-        raise ValueError(f"unparseable scryfall stamp {text!r}") from None
+    return _canonical_instant(updated_at).replace("-", "").replace(":", "")[:15]
+
+
+def _canonical_instant(stamp: str | None) -> str:
+    """One timestamp as an unambiguous UTC instant, for identity purposes.
+
+    Two things the readable stamp cannot express: fractional seconds, and
+    the offset. '2026-08-07T11:03:15+02:00' and '2026-08-07T09:03:15Z' are
+    the same moment and must produce the same identity; '…15.100Z' and
+    '…15.900Z' are different moments and must not.
+
+    Fractional digits are carried through as text, not through datetime.
+    datetime truncates at microseconds, so '.1000001Z' and '.1000009Z' —
+    both accepted by the validator — became one instant and one tag.
+    Upstream is free to serve more precision than Python happens to model,
+    and identity must not depend on that coincidence.
+    """
+    if not stamp:
+        return ""
+    text = stamp.strip()
+    m = _INSTANT.fullmatch(text)
+    if not m:
+        raise ValueError(f"unparseable scryfall stamp {text!r}")
+    whole, fraction, offset = m.group("whole"), m.group("frac"), m.group("off")
+    if whole is None:
+        # The bare-date fallback older builds wrote for this field. Read as
+        # midnight UTC, which is what it means, so it cannot name a different
+        # release than the same instant written out in full.
+        whole, fraction, offset = f"{m.group('date')}T00:00:00", None, "Z"
+    parsed = datetime.fromisoformat(
+        whole + ("+00:00" if offset in (None, "Z", "z") else offset))
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    # Trailing zeros carry no information: '.100' and '.1' are one moment.
+    digits = (fraction or "").lstrip(".").rstrip("0")
+    return parsed.strftime("%Y-%m-%dT%H:%M:%S") + (f".{digits}" if digits else "")
+
+
+def _stamp_digest(oracle: str, rulings: str | None,
+                  all_cards: str | None, builder: str | None = None) -> str:
+    """Sixteen hex characters over the exact instants of every dataset.
+
+    Eight was 32 bits, and a reviewer found a real collision by deterministic
+    search after 126,930 candidates — two snapshots, one tag, which is the
+    precise failure this suffix exists to prevent. Sixty-four bits puts that
+    out of reach without making the tag meaningfully harder to read.
+
+    The builder revision goes in WHOLE. The readable part carries only a
+    prefix of it, and two revisions sharing that prefix produced one tag —
+    which is the exact property the builder component was added to provide,
+    since a parser fix over unchanged upstream data yields a different
+    corpus and needs a different name.
+    """
+    joined = "\n".join(
+        [_canonical_instant(s) for s in (oracle, rulings, all_cards)]
+        + [builder or ""])
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
 
 
 def tag_from_inputs(*, cr: str, oracle: str, rulings: str | None = None,
@@ -86,7 +152,15 @@ def tag_from_inputs(*, cr: str, oracle: str, rulings: str | None = None,
     if all_cards:
         parts.append(f"it{_scryfall_stamp(all_cards)}")
     if builder:
-        parts.append(f"b{builder[:7]}")
+        parts.append(f"b{builder[:12]}")
+    # The readable part above is truncated to whole seconds and drops the UTC
+    # offset, so two genuinely different snapshots — .100+00:00 and
+    # .900+00:00 — produced one tag. That is not cosmetic: the plan reserves
+    # snapshot A's tag, the builder downloads snapshot B, and the
+    # publish-time comparison agrees because both sides computed the same
+    # wrong name. This suffix carries the full instants the readable part
+    # threw away, so identity is exact while the tag stays legible.
+    parts.append(f"s{_stamp_digest(oracle, rulings, all_cards, builder)}")
     return "-".join(parts)
 
 

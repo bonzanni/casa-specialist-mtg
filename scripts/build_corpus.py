@@ -156,6 +156,56 @@ def _it_alias_rows(card: dict, seen: set[tuple[str, str]]) -> list[tuple[str, st
     return rows
 
 
+def _unique_bulk_entry(entries, kind: str) -> dict | None:
+    """The one entry of `kind` in a bulk-data `data` array.
+
+    None when absent (the caller falls back to the build date); SystemExit
+    when duplicated, because there is no honest way to pick. Mirrors
+    scryfall_stamp.unique_entry, which the workflow's planning step uses on
+    the same response.
+    """
+    if not isinstance(entries, list):
+        return None
+    matches = [e for e in entries if isinstance(e, dict) and e.get("type") == kind]
+    if len(matches) > 1:
+        raise SystemExit(
+            f"bulk_meta.json carries {len(matches)} {kind!r} entries; "
+            "refusing to guess which one the corpus was built from")
+    return matches[0] if matches else None
+
+
+def bulk_uris(bulk: dict) -> dict[str, str]:
+    """Download URI per dataset, from Scryfall's bulk-data response.
+
+    Scryfall replaced `download_uri` with `jsonl_download_uri` when it moved
+    bulk data to JSONL, and the builder died with a bare KeyError deep inside
+    a comprehension — which reads as a bug in us rather than a schema change
+    upstream. Fail loudly and name the key instead.
+
+    Each dataset is resolved through the same duplicate-refusing lookup the
+    timestamp reader uses. This was a dict keyed by type, so it was
+    last-wins, while every timestamp reader was first-wins: a response
+    carrying two `oracle_cards` entries downloaded one dataset and stamped it
+    with the other's timestamp.
+    """
+    uris: dict[str, str] = {}
+    for kind in ("oracle_cards", "rulings", "all_cards"):
+        b = _unique_bulk_entry(bulk.get("data"), kind)
+        if b is None:
+            continue
+        if "jsonl_download_uri" not in b:
+            raise SystemExit(
+                f"bulk entry {kind!r} has no jsonl_download_uri; "
+                "Scryfall's bulk-data schema has changed again")
+        uris[kind] = b["jsonl_download_uri"]
+    # all_cards is optional (only --with-it-aliases needs it); these are not.
+    for required in ("oracle_cards", "rulings"):
+        if required not in uris:
+            raise SystemExit(
+                f"no {required!r} entry in Scryfall's bulk-data response")
+    return uris
+
+
 def _scryfall_updated_at(bulk_meta_path: Path | None, kind: str = "oracle_cards") -> str:
     """The real Scryfall bulk-data timestamp for oracle_cards when
     plugins/mtg/data/bulk_meta.json (written by main()) is available; falls
@@ -164,9 +214,13 @@ def _scryfall_updated_at(bulk_meta_path: Path | None, kind: str = "oracle_cards"
     if bulk_meta_path is not None and bulk_meta_path.exists():
         try:
             meta = json.loads(bulk_meta_path.read_text(encoding="utf-8"))
-            for entry in meta.get("data", []):
-                if entry.get("type") == kind and entry.get("updated_at"):
-                    return entry["updated_at"]
+            # A duplicated dataset type is a hard error, not a first-match:
+            # see scryfall_stamp.unique_entry. This reader and the URI table
+            # in main() must resolve the same entry or the corpus is stamped
+            # with a timestamp belonging to data it does not contain.
+            entry = _unique_bulk_entry(meta.get("data", []), kind)
+            if entry is not None and entry.get("updated_at"):
+                return entry["updated_at"]
         except (json.JSONDecodeError, OSError) as exc:
             print(f"warning: could not read {bulk_meta_path}: {exc}; "
                   f"scryfall_updated_at falls back to build date", file=sys.stderr)
@@ -333,17 +387,7 @@ def main() -> int:
             urllib.request.Request("https://api.scryfall.com/bulk-data",
                                    headers=UA), timeout=60).read())
         (DATA / "bulk_meta.json").write_text(json.dumps(bulk))
-        # Scryfall replaced `download_uri` with `jsonl_download_uri` when it
-        # moved bulk data to JSONL. Fail loudly on the old key rather than
-        # KeyError deep in a comprehension, so the next schema change reads as
-        # a schema change.
-        uris = {}
-        for b in bulk["data"]:
-            if "jsonl_download_uri" not in b:
-                raise SystemExit(
-                    f"bulk entry {b.get('type')!r} has no jsonl_download_uri; "
-                    "Scryfall's bulk-data schema has changed again")
-            uris[b["type"]] = b["jsonl_download_uri"]
+        uris = bulk_uris(bulk)
         _fetch(uris["oracle_cards"], oracle)
         _fetch(uris["rulings"], rl)
         if args.with_it_aliases:

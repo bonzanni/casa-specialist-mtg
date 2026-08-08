@@ -9,7 +9,7 @@ tools:
   allowed: []
   disallowed: [Bash, Write, Edit, Read, Glob, Grep, WebFetch, WebSearch, NotebookEdit, Agent, Task]
   permission_mode: dontAsk
-  max_turns: 8
+  max_turns: 30
   skills: none
   voice_guard: none
 mcp_servers: []
