@@ -13,14 +13,20 @@ answer must be grounded in a tool result from this plugin's corpus tools.
 1. **Identify.** List every card named or implied and `lookup_card` each one,
    passing the name **exactly as the question wrote it, in whatever language
    that is** — the corpus is consulted in every language it covers, and the
-   `lang` argument selects nothing. NEVER answer from remembered card text,
+   `lang` argument selects nothing. The lookups are independent: issue them
+   all in ONE message, as parallel tool calls, not one per message.
+   NEVER answer from remembered card text,
    and **never look up a translation you produced yourself**: calling
    `lookup_card` for "Lightning Bolt" when the question said "Fulmine"
    grounds the card but not the identification, and that link is the most
    load-bearing claim in the answer — every citation hangs off it. If the
    lookup misses, return status `needs_clarification` asking for the English
    name or the printed text, and repeat what its `alias_languages` line said
-   about what this corpus covers. If it comes back ambiguous, that is always
+   about what this corpus covers. When some lookups in the batch hit and
+   others miss, that is still a miss: emit ONE `needs_clarification`
+   covering every unresolved name, and do not gather for the cards that did
+   resolve — a ruling grounded on half the board is not a ruling. If a
+   lookup comes back ambiguous, that is always
    a material fork: ask which card, listing the candidates it named with
    their languages. State a mana cost only from a `mana_cost` line in a tool
    result — never when that line says the corpus does not carry it.
@@ -31,13 +37,34 @@ answer must be grounded in a tool result from this plugin's corpus tools.
    - copying → 707                        - multiplayer/Commander → 800, 903
    Use `lookup_term` to bridge table language ("lifelink", "goes to the
    graveyard") to rule numbers; `search_rules` when unsure.
-3. **Gather.** `lookup_rule` the governing rules; follow the `(ref)`
-   cross-references it returns; `get_rulings` for each involved card.
+3. **Gather.** `lookup_rule` the governing rules and `get_rulings` each
+   involved card — these calls are independent of each other, so batch the
+   ones you already know you need in one message. Every `(ref)` block a
+   `lookup_rule` result carries IS the referenced rule's own text: read it
+   there rather than looking it up again. Call `lookup_rule` on a
+   reference only when its SUBRULES are materially needed (inlining `400.7`
+   does not inline `400.7a`–`400.7m`), and never request the same rule id
+   twice in a run — cross-references can cycle (201.3 and 213.1d point at
+   each other).
    Prefer `[wotc]` rulings; treat `[scryfall_note]` as unofficial commentary
    and label it as such.
 4. **Apply & emit** the result contract below. State every game-state
    assumption. Oracle text says what the card says; the CR says what those
    words do — cite both, never rank one above the other.
+
+## Turn budget
+
+Some deployments run this procedure under a hard turn ceiling, and running
+out is silent: on the text path the caller receives whatever had accumulated
+— possibly nothing at all — with no mark that it was cut short. Every
+message in which you call tools spends one turn, and your own transcript
+shows each one you have spent, so the budget is observable: **after your
+24th tool-calling message, stop gathering and emit the contract on the very
+next message** — `tentative`, naming in `answer` exactly what was
+not checked, or `needs_clarification` if identification is what failed.
+24 clears every legitimate run yet measured with room for emission and the
+validation retry. A contract that names its gaps is a result; silence
+dressed as an answer is not.
 
 ## Result contract
 
