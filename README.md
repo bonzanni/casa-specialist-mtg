@@ -92,7 +92,7 @@ pip install -r tests/requirements.txt
 python3 -m pytest tests/ -q
 ```
 
-286 tests, no network required — they build fixture databases in `tmp_path`, including genuine FTS5 indexes, so the corpus-integrity checks are exercised without a corpus. One test additionally verifies a real built corpus if one is present, and skips otherwise. `tests/test_mtg_server.py` covers the JSON-RPC framing and adversarial-input contract (malformed requests, notifications, non-standard JSON constants, FTS injection, corrupt hash sidecars); `tests/test_build_corpus.py` covers CR parsing and the card-data transforms against offline fixtures; `tests/test_setup_corpus.py` covers the setup tool's transport and archive handling, with the one function that opens a socket replaced by a fake that serves bytes from memory.
+290 tests, no network required — they build fixture databases in `tmp_path`, including genuine FTS5 indexes, so the corpus-integrity checks are exercised without a corpus. One test additionally verifies a real built corpus if one is present, and skips otherwise. `tests/test_mtg_server.py` covers the JSON-RPC framing and adversarial-input contract (malformed requests, notifications, non-standard JSON constants, FTS injection, corrupt hash sidecars); `tests/test_build_corpus.py` covers CR parsing and the card-data transforms against offline fixtures; `tests/test_setup_corpus.py` covers the setup tool's transport and archive handling, with the one function that opens a socket replaced by a fake that serves bytes from memory.
 
 Test fixtures are invented rules and invented cards in the real formats, never excerpts — the parsers care about shape, and shape is reproducible without copying anything.
 
@@ -105,6 +105,8 @@ The corpus is deliberately **not** one of those dependencies. Casa's install pat
 ### The setup tool
 
 The plugin declares `casa.setupTool: setup_corpus`, a tool that downloads, verifies and installs a corpus from wherever the operator points it. It reads three variables:
+
+The five lookup tools are declared `{"result": "safe"}` under `casa.resultContract` (casa 0.290.0 and later): they return rules text, card text and rulings, never a live link or credential, so nothing is escrowed. Casa refuses any non-setup tool missing from that declaration before it runs, so a new tool must be added there too; `tests/test_result_contract.py` checks the declaration against the server's tool table.
 
 | Variable | Purpose |
 | --- | --- |
