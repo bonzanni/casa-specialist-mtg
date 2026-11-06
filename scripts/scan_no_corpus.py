@@ -120,7 +120,7 @@ ALLOWLIST_BLOBS: dict[str, str] = {
     # no rules or card text.
     "eb15a6ab6e4dd595add8c151ca114d44bfa9cf7b": (
         "test source, reviewed 2026-08-08: assertions and invented fixtures"),
-    # The same file after a comment-only rewording. Same content, still over
+    # The same file after a comment-only rewording. Same tests, comments reworded, still over
     # the ceiling, still no rules or card text.
     "2f6a89fb1a33e21d794fe053b99b5d386186010f": (
         "test source, reviewed 2026-11-06: assertions and invented fixtures"),
