@@ -25,12 +25,11 @@ BUNDLED_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 def _resolve_data_dir() -> Path:
     """Where the corpus lives.
 
-    Casa hands the plugin a writable directory of its own, outside the
-    installed plugin tree — and outside is the point: that tree is
-    content-checksummed, so a corpus written into it would make the next
-    registry reload read the plugin as corrupt. A standalone Claude Code
-    install has no such directory, and there the plugin's own data/ is both
-    the natural place and the one the builder writes to by default.
+    Claude Code hands every plugin a writable directory of its own, outside
+    the installed plugin tree — and outside is the point: under casa that tree
+    is content-checksummed, so a corpus written into it would make the next
+    registry reload read the plugin as corrupt. The plugin's own data/ is the
+    fallback for a server started by hand, where nothing sets the variable.
     """
     external = os.environ.get("CLAUDE_PLUGIN_DATA", "").strip()
     return Path(external) if external else BUNDLED_DATA_DIR

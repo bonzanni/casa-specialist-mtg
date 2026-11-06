@@ -2,7 +2,7 @@
 
 A Magic: The Gathering rules judge that answers from an offline corpus instead of from a model's memory, and refuses to state a ruling it cannot cite.
 
-The repository holds two things. **`plugins/mtg/` is a standalone Claude Code plugin** — five read-only MCP tools over a local SQLite corpus of the Comprehensive Rules, Oracle card text, and rulings, plus a skill that makes the model actually use them. Running it needs no casa and no account — only a corpus, which you build (see below). The rest of the repository (`role/`, `persona/`, `manifest.json`) packages that plugin as a specialist component for [casa](https://github.com/bonzanni), a household assistant deployment; if you are not running casa, ignore those directories.
+The repository holds two things. **`plugins/mtg/` is a standalone Claude Code plugin** — five read-only MCP tools over a local SQLite corpus of the Comprehensive Rules, Oracle card text, and rulings, plus a skill that makes the model actually use them. Running it needs no casa and no account — only a corpus, which you build (see below). The rest of the repository (`role/`, `persona/`, `manifest.json`) packages that plugin as a specialist component for [casa](https://github.com/bonzanni/ha-casa-app), a household assistant that runs as a Home Assistant app; if you are not running casa, ignore those directories.
 
 ## Why an offline corpus
 
@@ -17,17 +17,34 @@ Trained MTG knowledge is confidently wrong at exactly the wrong moments: subrule
 | `lookup_term` | A glossary definition, to bridge table language to rule numbers |
 | `lookup_card` | Oracle text by card name, English or Italian printed name, with fuzzy candidates on a near-miss |
 | `get_rulings` | Rulings for a card, each labelled `[wotc]` (official) or `[scryfall_note]` (unofficial commentary) |
-| `setup_corpus` | Post-install only: fetch and verify a corpus from a location the operator configured |
+| `setup_corpus` | Post-install only: fetch and verify a corpus from a location you configured |
 
 Every response ends in a `corpus_info` line naming the CR effective date, the Scryfall snapshot date, and the corpus hash, so a ruling can be traced to the exact data that produced it.
 
-A sixth tool, `setup_corpus`, installs a corpus after the plugin is installed; it is described under [Casa integration](#casa-integration) and does nothing unless an operator has configured where the corpus comes from.
+A sixth tool, `setup_corpus`, installs a corpus after the plugin is installed; it is described under [Casa integration](#casa-integration) and does nothing until it is told where the corpus comes from.
 
 The server (`plugins/mtg/server/mtg_server.py`) is stdlib-only, and the query path is read-only by construction: SQLite is opened `mode=ro`, output is bounded, and FTS terms are quoted so a card name can never inject query syntax. Answering a question reaches no shell, no socket and no write — the code that downloads and installs a corpus lives in a separate module (`setup_corpus.py`) that the server imports only when `setup_corpus` is called, so that is a property of what the query path can reach rather than a promise about how it is used.
 
-The corpus is read from `$CLAUDE_PLUGIN_DATA/corpus.sqlite` when that variable is set — casa sets it to a writable directory belonging to the plugin — and from the plugin's own `data/corpus.sqlite` otherwise.
+The corpus is read from `$CLAUDE_PLUGIN_DATA/corpus.sqlite`, in the writable directory Claude Code gives each plugin — under casa as well as standalone — and from the plugin's own `data/corpus.sqlite` only for a server started by hand, where nothing sets that variable.
 
 ## Install
+
+There are two routes: as a specialist on casa, or as a plugin in Claude Code. Both need a corpus you build yourself (see [Build the corpus](#build-the-corpus)).
+
+### On casa
+
+This needs casa 0.317.0 or later. Have a corpus reachable first: pack your build into a `.tar.gz`, put it at an `https://` URL you control, and note the archive's sha256.
+
+```bash
+tar -C plugins/mtg/data -czf corpus.tar.gz corpus.sqlite corpus.sqlite.sha256
+sha256sum corpus.tar.gz
+```
+
+Then ask casa's configurator in chat:
+
+> Install the MTG specialist from bonzanni/casa-specialist-mtg, the latest version. The corpus is at `<URL>` and its sha256 is `<SHA256>`.
+
+Approve the consent message casa sends you. The configurator installs the specialist with its plugin and persona, adds it to the assistant's helpers, and sets the two corpus values; casa then runs `setup_corpus` by itself, and the assistant tells you in one line how that went. See [Casa integration](#casa-integration) for the details, including a URL that needs a token.
 
 ### As a Claude Code plugin
 
@@ -39,17 +56,19 @@ The corpus is read from `$CLAUDE_PLUGIN_DATA/corpus.sqlite` when that variable i
 Then build the corpus — the plugin ships without one, and **the installed
 plugin does not include the builder**: `/plugin install` copies only
 `plugins/mtg/`, while `scripts/build_corpus.py` lives at the repository root.
-Clone the repository to build, then point `--out` at the installed plugin's
-`data/` directory:
+Clone the repository to build, then point `--out` at the directory Claude Code
+gives the plugin for its data:
 
 ```bash
 git clone https://github.com/bonzanni/casa-specialist-mtg
 cd casa-specialist-mtg
-python3 scripts/build_corpus.py --cr-url <URL> --out <installed-plugin>/data/corpus.sqlite
+python3 scripts/build_corpus.py --cr-url <URL> --out ~/.claude/plugins/data/mtg-casa-specialist-mtg/corpus.sqlite
 ```
 
-Until a corpus exists where the server reads it, every tool reports an error
-rather than returning a wrong answer.
+(`$CLAUDE_CONFIG_DIR` replaces `~/.claude` if you set it.) Until a corpus exists
+where the server reads it, every tool reports an error rather than returning a
+wrong answer. Do not put it in the installed plugin's own `data/`: Claude Code
+sets the data directory above, so the server never looks there.
 
 ### Build the corpus
 
@@ -67,7 +86,7 @@ python3 scripts/build_corpus.py --cr-url "$(python3 scripts/resolve_cr_url.py)"
 
 It refuses rather than guesses: no link, several links, or an unreachable page all exit non-zero instead of building a corpus from an invented URL. Scryfall's bulk data is discovered through their API. `scripts/check_corpus_plausible.py` will tell you whether the result actually parsed, which matters most when nobody is watching the build.
 
-This writes `plugins/mtg/data/corpus.sqlite` (~46 MB) and a `.sha256` sidecar. Add `--with-it-aliases` to also index Italian printed names, which downloads Scryfall's ~2 GB all-cards bulk file and streams it — worth it only if you ask questions in Italian.
+By default this writes `plugins/mtg/data/corpus.sqlite` (~46 MB) and a `.sha256` sidecar, which is the build to pack for casa; `--out` writes them elsewhere. Add `--with-it-aliases` to also index Italian printed names, which downloads Scryfall's ~2 GB all-cards bulk file and streams it — worth it only if you ask questions in Italian.
 
 Nothing is published from this repository — no corpus in the tree, no corpus as a release asset. Redistributing the rules and card text is the thing the Fan Content Policy prohibits, and hosting the same bytes as a release asset would be that same act with a different URL. This project therefore points at no corpus and names no location; building one is the path it supports. The setup tool described under [Casa integration](#casa-integration) fetches from wherever an operator hosts their own build, which is their arrangement to make and to keep private.
 
@@ -100,38 +119,36 @@ Test fixtures are invented rules and invented cards in the real formats, never e
 
 For a casa deployment, this repository is a `casa.specialist-component/v1` component: `role/role.yaml` defines the specialist's tool grants and response shape, `role/doctrine.md` its operating procedure, `persona/` the default "Judge" persona pack, and `manifest.json` pins the digest of every dependency. Casa installs the whole closure under one consent.
 
-The corpus is deliberately **not** one of those dependencies. Casa's install path verifies every dependency against a digest published by the component author, and a corpus cannot be published — so instead of weakening that check, the corpus is supplied after install, from a location the operator chooses. That keeps the public repository free of rules text while letting an operator who already has a corpus install in one step.
+The corpus is deliberately **not** one of those dependencies. Casa's install path verifies every dependency against a digest published by the component author, and a corpus cannot be published — so instead of weakening that check, the corpus is supplied after install, from a location you choose. That keeps the public repository free of rules text while letting anyone who already has a corpus install in one step.
 
 ### The setup tool
 
-The plugin declares `casa.setupTool: setup_corpus`, a tool that downloads, verifies and installs a corpus from wherever the operator points it. It reads three variables:
-
-The five lookup tools are declared `{"result": "safe"}` under `casa.resultContract` (casa 0.290.0 and later): they return rules text, card text and rulings, never a live link or credential, so nothing is escrowed. Casa refuses any non-setup tool missing from that declaration before it runs, so a new tool must be added there too; `tests/test_result_contract.py` checks the declaration against the server's tool table.
+The plugin declares `casa.setupTool: setup_corpus`, a tool that downloads, verifies and installs a corpus from wherever you point it. It reads three variables:
 
 | Variable | Purpose |
 | --- | --- |
 | `CASA_PLUGIN_MTG_CORPUS_URL` | `https://` URL of a `.tar.gz` holding `corpus.sqlite` and `corpus.sqlite.sha256` |
 | `CASA_PLUGIN_MTG_CORPUS_SHA256` | sha256 the downloaded archive must have |
-| `CASA_PLUGIN_MTG_CORPUS_TOKEN` | Bearer token, if the URL needs one |
+| `CASA_PLUGIN_MTG_CORPUS_TOKEN` | Bearer token, if the URL needs one (optional) |
 
-**Two things about this are easy to get wrong, so they are spelled out.**
+The URL and the sha256 are required: `plugin-env.conf` holds them, and the configurator sets them during the install, either from what you tell it or from a matching 1Password item. Until both resolve, casa withholds the plugin and a question to the judge comes back saying which variables are missing, rather than failing quietly. Casa holds the setup until then too, and runs it by itself as soon as they resolve. The specialist's own role does not need to grant the tool: casa's server-level grant covers every tool on the plugin's MCP server.
 
-*The values do not come from `config-schema.json`.* That file declares the keys — the two non-secret values are prompted for and recorded in the install snapshot, and the token is only ever recorded as having been supplied, never as a value — but a specialist's configuration is persisted in its install snapshot and is never exported into the MCP server's process environment. The variables reach the server from `plugin-env.conf`, which casa sources at boot and which resolves `op://` references, so the token belongs there as a reference rather than a literal. Declaring the keys and not populating that file leaves all three empty and the setup tool unable to run.
+Casa never asks for the token, because it is optional. If your URL needs one, tell the configurator to set `CASA_PLUGIN_MTG_CORPUS_TOKEN` as a 1Password reference (`op://…`). If the automatic setup already failed for lack of it, ask the assistant to have the judge run its corpus setup again once the token is set.
 
-*Casa does not invoke the setup tool on its own here.* Setup episodes open from a trigger-consent round, and a bundled plugin dependency may not declare triggers — so nothing dispatches `setup_corpus` automatically. Invoke it once, explicitly, after configuring the variables. The specialist's own role does not need to grant it: casa's server-level grant covers every tool on the plugin's MCP server.
+An upgrade to a new version runs the setup again; with a corpus already in place it says so and keeps that corpus. To replace a corpus, change the two values and ask the assistant to have the judge run its corpus setup with `force`.
 
-All three can also be passed as tool arguments, which is how the tool is used outside casa — but a token passed that way is in the transcript, so prefer the environment.
+The five lookup tools are declared `{"result": "safe"}` under `casa.resultContract`: they return rules text, card text and rulings, never a live link or credential, so nothing is escrowed. Casa refuses any non-setup tool missing from that declaration before it runs, so a new tool must be added there too; `tests/test_result_contract.py` checks the declaration against the server's tool table.
+
+Outside casa, pass the same three as tool arguments (`url`, `sha256`, `token`) — but a token passed that way is in the transcript, so prefer the environment.
 
 What the tool will not do:
 
 - speak anything but `https`, on the first request and on every redirect;
 - carry the token across a host change — a release asset usually redirects to a separate storage host, so the hop is followed and the credential is not;
 - keep reading past a byte cap or a wall-clock deadline, both checked while the body is arriving rather than after it has landed;
-- unpack anything before the archive's sha256 matches what the operator pinned;
+- unpack anything before the archive's sha256 matches what you pinned;
 - extract an absolute path, a `..` component, a symlink, a hardlink, a device node, or more decompressed bytes than the cap allows;
 - install a corpus whose bundled `corpus.sqlite.sha256` disagrees with the `corpus.sqlite` beside it, since that sidecar is the provenance every response quotes;
 - replace an existing corpus unless asked to with `force`, because swapping one out under a judge mid-ruling makes the citations it already gave irreproducible.
 
-The corpus lands in `$CLAUDE_PLUGIN_DATA`, the writable directory casa gives the plugin, and never inside the installed plugin tree — that tree is verified by content, and writing into it would make casa read the plugin as corrupt on the next reload.
-
-The alternative remains available: build a corpus with `scripts/build_corpus.py` and place it in that directory by hand.
+The corpus lands in `$CLAUDE_PLUGIN_DATA`, the plugin's writable directory, and never inside the installed plugin tree — that tree is verified by content, and writing into it would make casa read the plugin as corrupt on the next reload.

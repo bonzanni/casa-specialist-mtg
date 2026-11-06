@@ -58,11 +58,11 @@ class SetupError(Exception):
 def default_data_dir() -> Path:
     """The corpus directory, resolved at call time.
 
-    Under casa the corpus must land in the writable plugin-data directory,
-    NOT in the installed plugin tree: that tree is content-checksummed, and a
-    46 MB file appearing inside it makes the next registry reload treat the
-    plugin as corrupt. A standalone Claude Code install has no such directory
-    and falls back to the plugin's own data/.
+    The corpus must land in the writable plugin-data directory Claude Code
+    sets, NOT in the installed plugin tree: under casa that tree is
+    content-checksummed, and a 46 MB file appearing inside it makes the next
+    registry reload treat the plugin as corrupt. A server started by hand,
+    with no such directory, falls back to the plugin's own data/.
 
     The server resolves the same pair for reading and passes the result in,
     so in a real deployment there is one answer rather than two.
