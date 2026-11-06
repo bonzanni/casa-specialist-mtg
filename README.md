@@ -135,7 +135,7 @@ The URL and the sha256 are required: `plugin-env.conf` holds them, and the confi
 
 Casa never asks for the token, because it is optional. If your URL needs one, tell the configurator to set `CASA_PLUGIN_MTG_CORPUS_TOKEN` as a 1Password reference (`op://…`). If the automatic setup already failed for lack of it, ask the assistant to have the judge run its corpus setup again once the token is set.
 
-An upgrade to a new version runs the setup again; with a corpus already in place it says so and keeps that corpus. To replace a corpus, change the two values and ask the assistant to have the judge run its corpus setup with `force`.
+An upgrade to a new version runs the setup again; with a corpus already in place it says so and keeps that corpus. Upgrading from 0.7.0, ask the configurator to set the two values as well, even with a corpus in place: 0.7.0 kept them somewhere the plugin never read, and until they are set casa withholds the plugin. To replace a corpus, change the two values and ask the assistant to have the judge run its corpus setup with `force`.
 
 The five lookup tools are declared `{"result": "safe"}` under `casa.resultContract`: they return rules text, card text and rulings, never a live link or credential, so nothing is escrowed. Casa refuses any non-setup tool missing from that declaration before it runs, so a new tool must be added there too; `tests/test_result_contract.py` checks the declaration against the server's tool table.
 
