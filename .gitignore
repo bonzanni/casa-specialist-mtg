@@ -29,8 +29,6 @@ __pycache__/
 .worktrees/
 .review-tmp/
 
-# The publication checklist is for this repository, not the published one.
+# Local working notes, never committed.
 PUBLISH.md
-
-# Cross-session handover notes. Read, act, delete — never committed.
 LIVE-EXERCISE-*.md

@@ -471,12 +471,12 @@ def test_jsonl_is_streamed_and_a_bad_line_is_fatal(tmp_path):
 
 
 def test_the_builder_does_not_classify_a_missing_cost_field(tmp_path):
-    """Rounds 24-26, and the reason the guard that used to live here is gone.
+    """The reason the guard that used to live here is gone.
 
-    Three rounds of findings landed on one per-row predicate: it refused
-    transform cards, then refused a REAL card (Westvale Abbey // Ormendahl,
-    Profane Prince), then drew two different proposed sharpenings from two
-    reviewers. The cause is that "unknown for this row" has nowhere to live
+    One per-row predicate kept failing: it refused transform cards, then
+    refused a REAL card (Westvale Abbey // Ormendahl, Profane Prince), and its
+    next sharpening had two equally plausible forms. The cause is that
+    "unknown for this row" has nowhere to live
     -- the column is NOT NULL and holds a string -- so no predicate can add
     the state the schema lacks.
 
@@ -524,13 +524,12 @@ def test_the_corpus_gate_owns_what_the_builder_stopped_asking(tmp_path):
 
 
 def test_a_card_whose_faces_all_declare_an_empty_cost_still_builds(tmp_path):
-    """Round 25, Sol, against round 24's own fix. Westvale Abbey // Ormendahl,
-    Profane Prince is a real transform card: no top-level mana_cost key, and
-    BOTH faces carry the key with ''. Verified against the live card object,
-    not reasoned about.
+    """Westvale Abbey // Ormendahl, Profane Prince is a real transform card:
+    no top-level mana_cost key, and BOTH faces carry the key with ''. Verified
+    against the live card object, not reasoned about.
 
-    Round 24 filtered faces by truthiness, so both real fields vanished and
-    the card looked identical to one carrying no field anywhere -- and the
+    An earlier fix filtered faces by truthiness, so both real fields vanished
+    and the card looked identical to one carrying no field anywhere -- and the
     guard added to protect the build would have killed the next one. The
     question the guard must ask is whether the KEY exists, not whether its
     value is non-empty; that distinction is the entire point of the column."""

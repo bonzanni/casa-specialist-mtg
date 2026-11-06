@@ -291,20 +291,20 @@ def build(cr_path: Path, oracle_path: Path, rulings_path: Path,
         # has none" and "the corpus does not carry cost" are different
         # claims, and conflating them is the defect this change removes.
         #
-        # THIS FUNCTION DOES NOT CLASSIFY ABSENCE, deliberately, and three
-        # review rounds are why. A per-row guard here tried to tell "the feed
-        # stopped carrying costs" from "this card has none", and could not:
+        # THIS FUNCTION DOES NOT CLASSIFY ABSENCE, deliberately. A per-row
+        # guard here tried to tell "the feed stopped carrying costs" from
+        # "this card has none", and could not:
         #
-        #   r24  raised when no top-level key existed -> would have refused
-        #        every transform card, whose cost lives per face.
-        #   r25  raised when no key existed on the object OR any face -> still
-        #        refused Westvale Abbey // Ormendahl, Profane Prince, a real
-        #        card with no top-level key and '' on both faces. That guard
-        #        would have killed the next weekly build.
-        #   r26  two reviewers proposed two DIFFERENT next sharpenings (require
-        #        the key on EVERY face; require an explicit '' rather than any
-        #        present key). A predicate that two careful readers derive
-        #        differently is underdetermined, not nearly-right.
+        #   - Raising when no top-level key existed would have refused every
+        #     transform card, whose cost lives per face.
+        #   - Raising when no key existed on the object OR any face still
+        #     refused Westvale Abbey // Ormendahl, Profane Prince, a real
+        #     card with no top-level key and '' on both faces. That guard
+        #     would have killed the next weekly build.
+        #   - The next sharpening had two equally plausible forms (require
+        #     the key on EVERY face; require an explicit '' rather than any
+        #     present key). A predicate that two careful readers derive
+        #     differently is underdetermined, not nearly-right.
         #
         # The cause is that "unknown for this row" has nowhere to live: the
         # column is NOT NULL and holds a string, so every input must become a

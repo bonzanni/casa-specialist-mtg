@@ -681,8 +681,7 @@ def test_excising_the_coverage_sentence_changes_the_answer(db):
 
     It asserts BOTH directions. Asserting only that the mutated module says
     a bare "not found" would pass just as well if the coverage sentence had
-    never been written -- that IS the pre-change behaviour. Terra caught
-    exactly this in design round 1.
+    never been written -- that IS the pre-change behaviour.
     """
     import re
     source = Path(db.__file__).read_text(encoding="utf-8")
@@ -735,7 +734,7 @@ def test_a_corpus_without_the_column_says_so(db):
 # --- an alias that names no language cannot attribute anything ---------------
 
 def test_an_alias_with_no_language_does_not_resolve(db):
-    """Round 24, found by both reviewers independently. A card_aliases row
+    """A card_aliases row
     with a NULL or blank lang used to resolve a card and label it
     'matched by: None printed name "..."' -- an attribution naming no
     language, pointing at a row alias_languages had already excluded from
@@ -783,7 +782,7 @@ def test_an_unlabelled_alias_is_not_offered_as_a_fuzzy_candidate(db):
 
 
 def test_a_null_cost_is_not_reported_as_none(db):
-    """Round 27, Sol. A NULL cost supports neither 'this card has no cost'
+    """A NULL cost supports neither 'this card has no cost'
     nor a cost, but truthiness collapsed it into 'none' -- an unsupported
     claim in the field this change exists to make honest.
 

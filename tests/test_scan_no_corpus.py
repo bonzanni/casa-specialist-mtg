@@ -257,7 +257,7 @@ def test_the_aggregate_ceiling_leaves_room_for_the_real_tree():
 
 
 def test_a_compressed_rules_dump_is_refused():
-    """Sol's finding: all 3,153 rules gzip to ~178 KB, which sat under the old
+    """All 3,153 rules gzip to ~178 KB, which sat under the old
     256 KB ceiling and carries no file header to recognise. The ceiling came
     down, and the signature now peels one layer and counts rule-numbered
     lines — a shape ordinary source and prose do not have."""

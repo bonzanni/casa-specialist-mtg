@@ -93,7 +93,7 @@ def format_output(stamps: dict[str, str]) -> str:
     Its own function so a test can exercise the REAL format against the REAL
     consumer. A test that feeds a hard-coded string to a copied shell snippet
     proves only that the copy still matches the copy — which is how a workflow
-    that had been broken for a whole round went on passing.
+    that had been broken for a while went on passing.
     """
     return "".join(f"{stamps[kind]}\n" for kind in WATCHED)
 

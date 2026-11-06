@@ -97,7 +97,7 @@ MAX_TOTAL_BYTES = 2 * 1024 * 1024
 # path. For history, exempt by blob id via ALLOWLIST_BLOBS instead.
 ALLOWLIST: dict[str, str] = {
     # 65 KB of pytest, and it was already within a kilobyte of the ceiling
-    # before round 24 added the mana_cost floor tests. Looked at: it is
+    # before the mana_cost floor tests went in. Looked at: it is
     # assertions and invented fixtures — no rules text, no card text, no
     # captured upstream response. The exemption is for SIZE only; the
     # signature checks above run before this list is consulted, so a real CR
@@ -120,6 +120,10 @@ ALLOWLIST_BLOBS: dict[str, str] = {
     # no rules or card text.
     "eb15a6ab6e4dd595add8c151ca114d44bfa9cf7b": (
         "test source, reviewed 2026-08-08: assertions and invented fixtures"),
+    # The same file after a comment-only rewording. Same content, still over
+    # the ceiling, still no rules or card text.
+    "2f6a89fb1a33e21d794fe053b99b5d386186010f": (
+        "test source, reviewed 2026-11-06: assertions and invented fixtures"),
 }
 
 # A sentinel path that can never be in ALLOWLIST, used to route history's

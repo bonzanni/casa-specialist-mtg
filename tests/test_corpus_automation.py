@@ -135,7 +135,7 @@ def test_a_cost_column_that_filled_with_nothing_is_refused(tmp_path):
 
 
 def test_the_cost_floor_is_where_it_says_it_is(tmp_path):
-    """Round 24, Sol S2. Every earlier test of this guard sat at 0 priced
+    """Every earlier test of this guard sat at 0 priced
     rows, so mutating `priced < 20000` to `priced < 1` left all of them
     passing -- the guard's NUMBER was unpinned, and a corpus with 20,000
     costs and 16,018 blanks drew no complaint at all. Sitting one row either
@@ -652,8 +652,8 @@ def test_this_repository_s_workflows_have_no_duplicate_keys():
 
 
 def test_the_private_build_workflow_has_no_duplicate_keys():
-    """The duplicate `steps:` that escaped came from patching one file across
-    many rounds. It is exactly the kind of damage a lenient parser hides."""
+    """The duplicate `steps:` that escaped came from patching one file over
+    and over. It is exactly the kind of damage a lenient parser hides."""
     workflow = (ROOT.parent / "casa-mtg-corpus" /
                 ".github" / "workflows" / "build-corpus.yml")
     if not workflow.exists():
@@ -842,15 +842,15 @@ def test_only_a_single_line_marker_claims_ownership_of_a_tag():
     assert owner(f"{marker} run 481516\n") == "ours", "a trailing newline is normal"
 
     # Both defeating shapes: the marker first with anything appended, and the
-    # marker buried after an innocuous first line. Terra found the first, Sol
-    # the second — a per-line anchor accepts either.
+    # marker buried after an innocuous first line — a per-line anchor accepts
+    # either.
     assert owner(f"{marker} run 481516\noperator annotation") == "other"
     assert owner(f"operator note\n{marker} run 481516\ndo not delete") == "other"
     assert owner(f"{marker} run 481516\n\nanything") == "other"
     assert owner(f"{marker} by hand") == "other"
     assert owner("v1.2.3") == "other"
 
-    # RESIDUAL, since this has caught me out three times now: the function
+    # RESIDUAL: the function
     # above is a COPY of the workflow's logic, not the workflow's logic. It
     # pins the rule, not the implementation. The verbatim-snippet check used
     # for the stamps consumer is the stronger pattern, and this ownership
@@ -858,7 +858,7 @@ def test_only_a_single_line_marker_claims_ownership_of_a_tag():
 
 
 def test_a_404_assignment_does_not_kill_the_step_under_the_runner_shell():
-    """The bug the first real run found, which review could not.
+    """The bug the first real run found, which reading the code could not.
 
     GitHub invokes a step as `bash --noprofile --norc -e -o pipefail`. The
     script's own `set -uo pipefail` cannot remove that `-e`. So
@@ -866,8 +866,8 @@ def test_a_404_assignment_does_not_kill_the_step_under_the_runner_shell():
     BEFORE the case that was written to interpret it — the cleanup never ran
     and left a reservation stranded on the very first execution.
 
-    Fourteen review rounds read this shell and missed it, because reading it
-    is not running it under the shell that runs it.
+    Reading this shell does not reveal it, because reading it is not running
+    it under the shell that runs it.
     """
     import subprocess
 
@@ -1443,7 +1443,7 @@ def test_builder_revisions_sharing_a_prefix_get_different_tags():
 
 
 def test_a_null_in_the_cost_column_is_refused(tmp_path):
-    """Round 27, Sol. The builder declares mana_cost NOT NULL, so a NULL
+    """The builder declares mana_cost NOT NULL, so a NULL
     means the corpus was not built by it -- and the count of priced rows
     steps straight over NULLs, so 20,000 real costs can hide any number of
     them. Refusing is cheap; the server's fallback is the second line of

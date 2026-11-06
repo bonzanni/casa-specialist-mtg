@@ -8,29 +8,27 @@ tool-calling messages and emit a degraded-but-typed contract instead. That
 sentence is prose, so nothing structural fails when it is weakened or
 deleted; this test is the thing that fails.
 
-Pinned here, against the defect shapes this repository keeps re-finding:
+Pinned here, against the ways this guard has been defeated:
 
-- Non-binding copies are refused by SHAPE, not by enumeration. Rounds 3
-  and 4 each found one more code-block syntax the guard's normalization
-  did not strip (backtick fences, then tilde fences) — the same finding
-  shape twice in one mechanism, so the mechanism was cut: nothing is
+- Non-binding copies are refused by SHAPE, not by enumeration. Stripping
+  code blocks kept missing one more syntax (backtick fences, then tilde
+  fences), so the mechanism was cut: nothing is
   stripped. The header count runs over the RAW file, where a fenced decoy
   section ADDS a '## Turn budget' line and fails the exactly-one check
   closed; and the section itself must contain no code-block syntax at all
   (backtick or tilde fence, or a ≥4-space-indented line) — the stop rule
   is one flat prose paragraph, examples belong elsewhere.
 - Raw HTML is refused for the whole FILE, by shape: '<' followed by a
-  letter, '!', '/' or '?' — round 5 (both reviewers) hid the entire
-  section in an HTML comment, which renders as nothing and binds nobody,
-  and a comment can be closed after a dummy header so no section-scoped
-  ban catches every placement; round 7 (both reviewers) added the
-  processing instruction. Those four characters are ALL the ways
+  letter, '!', '/' or '?' — the entire section can hide in an HTML
+  comment, which renders as nothing and binds nobody, and a comment can
+  be closed after a dummy header so no section-scoped ban catches every
+  placement; a processing instruction does the same. Those four characters are ALL the ways
   CommonMark raw HTML can open after '<' — tag, comment/declaration/
   CDATA, closer, processing instruction — so the shape is spec-complete.
   SKILL.md is markdown prose, lists and fences; the first legitimate HTML
   tag in it can amend this line consciously.
-- Brackets are refused in the section (round 6, both reviewers: the
-  canonical sentence hidden in a link-reference definition's TITLE, which
+- Brackets are refused in the section (the canonical sentence can be
+  hidden in a link-reference definition's TITLE, which
   never renders — and an inline link's title has the same property). Every
   markdown construct that can carry non-rendered text inside otherwise
   normal prose starts with '[', so the section — one flat, link-free
@@ -42,7 +40,7 @@ Pinned here, against the defect shapes this repository keeps re-finding:
   weakening — an operator determined to deceive their own guard can edit
   the guard itself, which no test defends against.
 - The SECTION must exist exactly once, and its ENTIRE normalized text is
-  pinned to the approved copy below (round 8, Sol): matching only the
+  pinned to the approved copy below: matching only the
   imperative sentence let surrounding prose negate it — "This rule is
   obsolete and must not be followed: after your 24th …" passed every
   check, and deprecating in prose while forgetting to delete is exactly
@@ -52,7 +50,7 @@ Pinned here, against the defect shapes this repository keeps re-finding:
 - The syntax bans stay alongside the pin, because normalization collapses
   whitespace: a 4-space-indented (code-block) copy of the section body
   would normalize EQUAL to the prose it no longer renders as. And NO
-  fence line may precede the header at all (round 9, both reviewers):
+  fence line may precede the header at all:
   an unclosed fence in an earlier section swallows this one into a code
   block without changing a byte of it, and mere fence-line parity is
   beatable — a ``` line carrying an info string inside an open fence is
@@ -61,7 +59,7 @@ Pinned here, against the defect shapes this repository keeps re-finding:
   and fails closed; fences after the section cannot affect it.
 - `max_turns` is read from parsed YAML at `tools.max_turns`, not grepped:
   a stray "max_turns: 30" inside some block scalar must not out-vote the
-  operative ceiling (round-3 review, Sol).
+  operative ceiling.
 - The constant is checked floor and ceiling: it must clear the measured
   legitimate 16-turn run (issue #2, attempt 2 — a stop that fires inside
   it would degrade a question the component is known to answer), and it
@@ -113,7 +111,7 @@ def _turn_budget_section() -> str:
     Counting headers on the RAW text means a copy of the section inside any
     code block still adds a '## Turn budget' line and fails the exactly-one
     assertion — closed, demanding a conscious edit — instead of being
-    stripped by syntax rules that rounds 3 and 4 proved incomplete.
+    stripped by syntax rules that kept proving incomplete.
     """
     text = SKILL.read_text(encoding="utf-8")
     prefix = text.split("\n## Turn budget", 1)[0]
@@ -143,7 +141,7 @@ def _turn_budget_section() -> str:
     # of markdown displays what it contains.
     # Tabs are banned outright rather than modeling CommonMark's tab-stop
     # arithmetic: a leading tab makes a code block that space-collapsing
-    # normalization cannot see (round 10, Terra), and the pinned prose
+    # normalization cannot see, and the pinned prose
     # needs no tab anywhere.
     for syntax, pattern in (("a backtick fence", r"```"),
                             ("a tilde fence", r"~~~"),
