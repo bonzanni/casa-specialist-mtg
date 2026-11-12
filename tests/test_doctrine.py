@@ -87,3 +87,14 @@ def test_a_refused_hand_off_has_a_fallback():
     served = " ".join((_core() + _section("Text projection")).split())
     assert "Fido" in served
     assert "if Casa refuses the hand-off" in served
+
+
+def test_a_delegated_answer_is_formatted_like_a_direct_one():
+    """Asked through Ellen, the judge's closing message is posted verbatim in
+    his own chat (Casa's `answer_shown` line), but the request reads like one
+    from a colleague and he answered it as plain prose while direct answers
+    were formatted (live test, casa-test 2026-11-12). The served doctrine must
+    say the two are written the same way."""
+    served = " ".join((_core() + _section("Text projection")).split())
+    assert "answer_shown" in served
+    assert "format it exactly as you would" in served
