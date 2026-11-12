@@ -104,6 +104,11 @@ ALLOWLIST: dict[str, str] = {
     # excerpt pasted into it would still be refused.
     "tests/test_corpus_automation.py": (
         "test source, reviewed 2026-08-08: assertions and invented fixtures"),
+    # The judge's persona avatar, the one image the tree publishes: a
+    # 1024x1024 JPEG of a fictional person, generated, with no logos, text
+    # or card art. Casa caps it at 1 MiB. Size only, as above.
+    "persona/pack/avatar.jpg": (
+        "persona avatar, reviewed 2026-11-12: a generated portrait, no rules or card content"),
 }
 
 # Exemptions that survive history, keyed by the blob's object id. A path can
@@ -124,6 +129,10 @@ ALLOWLIST_BLOBS: dict[str, str] = {
     # the ceiling, still no rules or card text.
     "2f6a89fb1a33e21d794fe053b99b5d386186010f": (
         "test source, reviewed 2026-11-06: assertions and invented fixtures"),
+    # persona/pack/avatar.jpg as it enters history in 0.9.0, by its exact
+    # bytes: the image the path entry above names.
+    "c34e4165b817c3bee30526ddad1f57b1eb492e49": (
+        "persona avatar, reviewed 2026-11-12: a generated portrait, no rules or card content"),
 }
 
 # A sentinel path that can never be in ALLOWLIST, used to route history's

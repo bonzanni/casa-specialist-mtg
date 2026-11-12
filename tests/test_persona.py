@@ -22,6 +22,8 @@ PACK = ROOT / "persona/pack"
 PERSONA_MD = PACK / "persona.md"
 PERSONA_YAML = PACK / "persona.yaml"
 PERSONA_MANIFEST = ROOT / "persona/manifest.json"
+AVATAR = PACK / "avatar.jpg"
+AVATAR_MAX_BYTES = 1024 * 1024  # persona_pack.MAX_AVATAR_BYTES
 
 CORE_MIN, CORE_HEADROOM_MAX = 300, 450
 
@@ -68,3 +70,9 @@ def test_manifest_rows_and_checksum_match_files():
     assert component["default_persona"] == {"ref": ref, "checksum": computed}
     dep = next(d for d in component["dependencies"] if d["kind"] == "persona")
     assert dep == {"kind": "persona", "identifier": ref, "digest": computed}
+
+
+def test_avatar_is_a_jpeg_casa_admits():
+    b = AVATAR.read_bytes()
+    assert b[:3] == b"\xff\xd8\xff", "Casa admits only a JPEG avatar"
+    assert len(b) <= AVATAR_MAX_BYTES, f"avatar is {len(b)} bytes"

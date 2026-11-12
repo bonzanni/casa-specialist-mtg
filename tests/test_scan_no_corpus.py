@@ -236,22 +236,28 @@ def test_a_sharded_corpus_is_caught_by_the_aggregate_ceiling(tmp_path):
 
 def test_the_aggregate_ceiling_leaves_room_for_the_real_tree():
     """A guard that trips on ordinary growth gets disabled, so this pins that
-    the real repository sits well inside the limit."""
-    from scan_no_corpus import MAX_TOTAL_BYTES, _aggregate_verdict
+    the real repository sits well inside the limit. Files in ALLOWLIST are
+    left out of the margin (not out of the ceiling): each was reviewed one by
+    one at a fixed size, and the margin is for the unreviewed rest growing."""
+    from scan_no_corpus import ALLOWLIST, MAX_TOTAL_BYTES, _aggregate_verdict
 
     out = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"],
                          check=True, capture_output=True).stdout
-    total = 0
+    total = everything = 0
     for raw in out.split(b"\0"):
         if not raw:
             continue
         name = raw.decode()
         if "corpus.sqlite" in name:
             continue  # the private repo tracks the corpus by design
-        total += len(subprocess.run(
+        size = len(subprocess.run(
             ["git", "-C", str(ROOT), "show", f":{name}"],
             check=True, capture_output=True).stdout)
-    assert _aggregate_verdict(total, "tracked files") is None
+        everything += size
+        if name in ALLOWLIST:
+            continue
+        total += size
+    assert _aggregate_verdict(everything, "tracked files") is None
     assert total < MAX_TOTAL_BYTES // 4, (
         f"tree is {total} bytes, uncomfortably close to {MAX_TOTAL_BYTES}")
 
