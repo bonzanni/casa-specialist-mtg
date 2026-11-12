@@ -79,3 +79,11 @@ def test_the_procedure_skill_is_loaded():
     would reach no model."""
     role = yaml.safe_load(ROLE.read_text(encoding="utf-8"))
     assert role["tools"]["skills"] == "all"
+
+
+def test_a_refused_hand_off_has_a_fallback():
+    """Casa refuses hand_off in the judge's own chat (delegation depth 0) and
+    on voice; the Fido sentence must say what to do then, in the served part."""
+    served = " ".join((_core() + _section("Text projection")).split())
+    assert "Fido" in served
+    assert "if Casa refuses the hand-off" in served
