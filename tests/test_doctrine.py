@@ -18,9 +18,6 @@ ROOT = Path(__file__).resolve().parent.parent
 DOCTRINE = ROOT / "role/doctrine.md"
 ROLE = ROOT / "role/role.yaml"
 
-UNSERVED_MAX_CHARS = 120
-
-
 def _text() -> str:
     return DOCTRINE.read_text(encoding="utf-8")
 
@@ -40,11 +37,22 @@ def _core() -> str:
     return re.split(r"^#{1,6} ", body[1], maxsplit=1, flags=re.MULTILINE)[0]
 
 
+# The unserved sections, pinned whole: any rule added there is followed by
+# nobody, however short, so the only admitted text is this.
+UNSERVED = {
+    "Voice projection":
+        "Served rules live in Core doctrine and the Text projection.",
+    "Restricted webhook projection":
+        "Emit only the ruling; no persona voice, no conversational framing.",
+}
+
+
 def test_nothing_operative_lives_in_unserved_projections():
-    for title in ("Voice projection", "Restricted webhook projection"):
-        body = _section(title).strip()
-        assert len(body) <= UNSERVED_MAX_CHARS, (
-            f"'## {title}' holds {len(body)} chars that no model is served")
+    for title, pinned in UNSERVED.items():
+        body = " ".join(_section(title).split())
+        assert body == pinned, (
+            f"'## {title}' is not served to the judge on any surface Casa "
+            f"uses for him; it must read exactly {pinned!r}, found {body!r}")
 
 
 def test_voice_rules_are_in_the_served_part():
