@@ -43,3 +43,40 @@ jobs:
 
       - name: Refuse a corpus anywhere in the history
         run: python3 scripts/scan_no_corpus.py --history
+
+  # Casa's own loaders judge the component, at the oldest Casa it supports
+  # (README states the same floor; move the two together). Without this job
+  # the copies of Casa's rules elsewhere in the suite are all that stands
+  # between an edit and a refused install.
+  casa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: bonzanni/ha-casa-app
+          ref: v0.360.0
+          path: casa-src
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Casa's loaders import these; installed at the versions Casa pins at
+      # that ref, so a missing one fails the job on import instead of passing.
+      - name: Install Casa's loader dependencies at Casa's pins
+        run: |
+          set -euo pipefail
+          grep -iE '^(pyyaml|jsonschema|rfc8785|markdown-it-py)==' \
+            casa-src/casa/requirements.txt > casa-deps.txt
+          cat casa-deps.txt
+          python3 -m pip install --disable-pip-version-check -r casa-deps.txt pytest
+
+      # A CASA_ROOT that is set but wrong fails these tests rather than
+      # turning them into skips.
+      - name: The component against Casa's own code
+        env:
+          CASA_ROOT: ${{ github.workspace }}/casa-src/casa/rootfs/opt/casa
+        run: python3 -m pytest tests/test_casa_loaders.py tests/test_manifest_digest.py -q

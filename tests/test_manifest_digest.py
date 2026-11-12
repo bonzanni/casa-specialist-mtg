@@ -128,8 +128,9 @@ def test_the_component_checksum_matches_the_role_and_config_files():
     # disagreement here means the shortcut above stopped being equivalent,
     # which is the only way this test could pass while the component still
     # failed to load.
-    casa = ROOT.parent / "ha-casa-app" / "casa" / "rootfs" / "opt" / "casa"
-    if not casa.is_dir():
+    from casa_checkout import casa_root
+    casa = casa_root()
+    if casa is None:
         return
     import sys as _sys
     _sys.path.insert(0, str(casa))
