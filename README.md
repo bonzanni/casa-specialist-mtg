@@ -33,7 +33,7 @@ There are two routes: as a specialist on casa, or as a plugin in Claude Code. Bo
 
 ### On casa
 
-This needs casa 0.360.0 or later. Have a corpus reachable first: pack your build into a `.tar.gz`, put it at an `https://` URL you control, and note the archive's sha256.
+This needs casa 0.367.6 or later. Have a corpus reachable first: pack your build into a `.tar.gz`, put it at an `https://` URL you control, and note the archive's sha256.
 
 ```bash
 tar -C plugins/mtg/data -czf corpus.tar.gz corpus.sqlite corpus.sqlite.sha256
@@ -139,7 +139,7 @@ The URL and the sha256 are required: `plugin-env.conf` holds them, and the confi
 
 Casa never asks for the token, because it is optional. If your URL needs one, tell the configurator to set `CASA_PLUGIN_MTG_CORPUS_TOKEN` as a 1Password reference (`op://…`). If the automatic setup already failed for lack of it, ask the assistant to have the judge run its corpus setup again once the token is set.
 
-Upgrading from 0.8.0 needs casa 0.360.0 first: 0.9.0 declares its own chat and ships an avatar, which an older casa refuses. An upgrade to a new version runs the setup again; with a corpus already in place it says so and keeps that corpus. Upgrading from 0.7.0, ask the configurator to set the two values as well, even with a corpus in place: 0.7.0 kept them somewhere the plugin never read, and until they are set casa withholds the plugin. To replace a corpus, change the two values and ask the assistant to have the judge run its corpus setup with `force`.
+Upgrading to 0.9.2 needs casa 0.367.6 first: the role declares `voice_handoff`, which an older casa refuses. Upgrading from 0.8.0 likewise needed casa 0.360.0: 0.9.0 declares its own chat and ships an avatar, which an older casa refuses. An upgrade to a new version runs the setup again; with a corpus already in place it says so and keeps that corpus. Upgrading from 0.7.0, ask the configurator to set the two values as well, even with a corpus in place: 0.7.0 kept them somewhere the plugin never read, and until they are set casa withholds the plugin. To replace a corpus, change the two values and ask the assistant to have the judge run its corpus setup with `force`.
 
 The five lookup tools are declared `{"result": "safe"}` under `casa.resultContract`: they return rules text, card text and rulings, never a live link or credential, so nothing is escrowed. Casa refuses any non-setup tool missing from that declaration before it runs, so a new tool must be added there too; `tests/test_result_contract.py` checks the declaration against the server's tool table.
 
