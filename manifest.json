@@ -3,14 +3,14 @@
   "component_id": "casa/mtg",
   "version": "0.8.0",
   "default_persona": {
-    "ref": "casa/judge@0.1.0",
-    "checksum": "sha256:1635b9ecb48610d828231059a980c2a64a003c8afebe29da2cebb0162000fc8a"
+    "ref": "casa/judge@0.2.0",
+    "checksum": "sha256:a9c0605f737089cc4171e970234e267ddc74956bb6e7784593ee9bc5a2f5141f"
   },
   "dependencies": [
     {
       "kind": "persona",
-      "identifier": "casa/judge@0.1.0",
-      "digest": "sha256:1635b9ecb48610d828231059a980c2a64a003c8afebe29da2cebb0162000fc8a"
+      "identifier": "casa/judge@0.2.0",
+      "digest": "sha256:a9c0605f737089cc4171e970234e267ddc74956bb6e7784593ee9bc5a2f5141f"
     },
     {
       "kind": "plugin/implementation",
