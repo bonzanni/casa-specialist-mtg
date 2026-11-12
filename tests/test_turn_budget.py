@@ -1,8 +1,10 @@
 """The skill's turn-budget stop rule must exist, be singular, and fit the role.
 
-Issue #2: a run that hits the role's `max_turns` ceiling on the text path is
-delivered as an ordinary answer — possibly empty — with nothing marking it
-cut short. The countermeasure is procedural: SKILL.md carries one operative
+A run that hits the role's `max_turns` ceiling loses its ruling: on a
+delegated run Casa reports only that the specialist stopped, and in the
+judge's own chat whatever text had been written is sent as it stands. Issue
+#2 first met this as silent truncation, which Casa has since typed. The
+countermeasure is procedural: SKILL.md carries one operative
 imperative telling the model to stop gathering after a fixed number of
 tool-calling messages and emit a degraded-but-typed contract instead. That
 sentence is prose, so nothing structural fails when it is weakened or
@@ -80,22 +82,22 @@ ROLE = ROOT / "role/role.yaml"
 # collapsed). Changing the instruction in SKILL.md is allowed — by changing
 # it here in the same commit, consciously.
 CANONICAL_SECTION = (
-    "Some deployments run this procedure under a hard turn ceiling, and "
-    "running out is silent: on the text path the caller receives whatever "
-    "had accumulated — possibly nothing at all — with no mark that it was "
-    "cut short. Every message in which you call tools spends one turn, and "
-    "your own transcript shows each one you have spent, so the budget is "
-    "observable: after your 24th tool-calling message, stop gathering and "
-    "emit the contract on the very next message — `tentative`, naming in "
-    "`answer` exactly what was not checked, or `needs_clarification` if "
-    "identification is what failed. 24 clears every legitimate run yet "
-    "measured with room for emission and the validation retry. A contract "
-    "that names its gaps is a result; silence dressed as an answer is not.")
+    "Every message in which you call tools spends one turn, and your own "
+    "transcript shows each one you have spent, so the budget is observable. "
+    "Running out costs the ruling: on a delegated run the answer is lost and "
+    "the person is told only that you stopped; in your own chat whatever you "
+    "had written is sent as it stands. So after your 24th tool-calling "
+    "message, stop gathering and emit the result on the very next message — "
+    "`tentative`, naming exactly what was not checked, or "
+    "`needs_clarification` if identification is what failed. 24 clears every "
+    "legitimate run yet measured with room for emission and the validation "
+    "retry. A result that names its gaps is an answer; a ruling lost at the "
+    "ceiling is not.")
 
 IMPERATIVE = re.compile(
     r"after your (\d+)(?:st|nd|rd|th) tool-calling message, "
-    r"stop gathering and emit the contract on the very next message "
-    r"— `tentative`, naming in `answer` exactly what was not checked, "
+    r"stop gathering and emit the result on the very next message "
+    r"— `tentative`, naming exactly what was not checked, "
     r"or `needs_clarification` if identification is what failed\.")
 
 # The measured legitimate run (issue #2, attempt 2) took 16 turns total;
