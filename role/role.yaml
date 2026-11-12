@@ -17,6 +17,7 @@ channels: []
 own_chat:
   short_description: "Magic: The Gathering rules — rulings grounded in the Comprehensive Rules and Oracle text."
   description: "I'm the Judge, the household's Magic: The Gathering rules specialist. Ask me how cards and rules interact and I'll give you a short ruling grounded in the Comprehensive Rules, Oracle text and official rulings — ask why and I'll show the details. Tournament policy, format legality and banlists are outside what I answer."
+voice_handoff: true
 memory: {token_budget: 0, read_strategy: per_turn}
 session: {strategy: ephemeral, idle_timeout_seconds: 0}
 disclosure: {policy: delegated, overrides: {}}

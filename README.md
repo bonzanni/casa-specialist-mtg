@@ -48,7 +48,7 @@ Approve the consent message casa sends you. The configurator installs the specia
 
 The judge has a Telegram chat of his own; when the install is done, the assistant offers to set up his bot. Ask him rules questions there: he answers with a short ruling and why, and goes into the detailed rules, card text and rulings when you ask. A rules question asked of the assistant goes to him too, and his answer appears in his chat.
 
-To ask by voice, have the configurator add the judge to the voice concierge's helpers as well ("let Gary ask the judge rules questions"). The concierge passes your question on and tells you the answer; a slow one comes back when the judge is done, on the device you asked.
+To ask by voice, the judge must also be one of the voice concierge's helpers. The role declares `voice_handoff: true`, so on Casa 0.367.6 or later the install ends by asking whether Gary should be able to ask the judge too; you can also ask for it later ("let Gary ask the judge rules questions"). The concierge passes your question on and tells you the answer; a slow one comes back when the judge is done, on the device you asked.
 
 ### As a Claude Code plugin
 
