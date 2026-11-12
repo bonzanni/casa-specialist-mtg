@@ -62,3 +62,12 @@ def test_own_chat_texts_fit_casas_schema():
     oc = yaml.safe_load(ROLE.read_text(encoding="utf-8"))["own_chat"]
     assert 1 <= len(oc["short_description"]) <= 120
     assert 1 <= len(oc["description"]) <= 512
+
+
+def test_the_procedure_skill_is_loaded():
+    """Casa maps any `tools.skills` other than "all" to skills=None
+    (tools.py `_build_specialist_options`), which loads no plugin skill — so
+    SKILL.md, where the procedure, the carriers and the turn budget live,
+    would reach no model."""
+    role = yaml.safe_load(ROLE.read_text(encoding="utf-8"))
+    assert role["tools"]["skills"] == "all"
