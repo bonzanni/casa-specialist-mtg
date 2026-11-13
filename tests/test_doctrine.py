@@ -64,7 +64,8 @@ def test_the_guest_projection_holds_the_public_rules():
     body = " ".join(_section("Guest projection").split())
     assert body, "doctrine has no '## Guest projection'"
     for anchor in ("ruling first", "not in the corpus", "no one to ask",
-                   "tournament policy", "One message"):
+                   "tournament policy", "One message", "never named",
+                   "Bait is not a question", "Never cruel"):
         assert anchor in body, anchor
     # The frame already names the operator; the public doctrine never does.
     assert "Nicola" not in body
