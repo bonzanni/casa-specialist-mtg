@@ -52,3 +52,8 @@ def test_no_narration_between_tool_calls():
     assert "nothing but the answer" in text, (
         "in the own chat every message's text reaches the operator, so the "
         "procedure must forbid narration between lookups")
+
+
+def test_the_written_carrier_names_the_link_and_symbol_lines():
+    s = _section("Result contract")
+    assert "`scryfall`" in s and "`mana_symbols`" in s

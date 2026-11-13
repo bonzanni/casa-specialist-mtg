@@ -797,6 +797,7 @@ def test_a_null_cost_is_not_reported_as_none(db):
     out = db.tool_lookup_card({"name": "grizzly bears"})
     assert "mana_cost: none" not in out
     assert "mana_cost: not carried by this corpus" in out
+    assert "mana_symbols" not in out
 
 
 def test_a_non_string_cost_is_not_reported_as_a_cost(db):
@@ -810,3 +811,69 @@ def test_a_non_string_cost_is_not_reported_as_a_cost(db):
     out = db.tool_lookup_card({"name": "grizzly bears"})
     assert "mana_cost: 3" not in out
     assert "mana_cost: not carried by this corpus" in out
+    assert "mana_symbols" not in out
+
+
+# --- a hit carries a Scryfall link and the cost drawn in symbols -------------
+
+def _with_costs(db):
+    con = sqlite3.connect(db.DB_PATH)
+    con.execute("ALTER TABLE cards ADD COLUMN mana_cost TEXT NOT NULL DEFAULT ''")
+    con.execute("UPDATE cards SET mana_cost='{1}{G}' WHERE oracle_id='oid1'")
+    con.execute("INSERT INTO cards VALUES ('oid-land','Island','island','Land','','[]','')")
+    con.execute("INSERT INTO cards_fts VALUES ('Island','oid-land')")
+    con.commit(); con.close()
+    db._reset_db()
+
+
+@pytest.mark.parametrize("cost,drawn", [
+    ("{U}{U}", "🔵🔵"),
+    ("{1}{G}", "①🟢"),
+    ("{W}{B}{R}", "⚪⚫🔴"),
+    ("{0}", "⓪"), ("{10}", "⑩"), ("{20}", "⑳"),
+    ("{X}{R}", "Ⓧ🔴"),
+    ("{C}", "◇"), ("{S}", "❄️"), ("{E}", "⚡"),
+    ("{T}", "↷"), ("{Q}", "↶"),
+    # Two hybrids side by side must read as two symbols.
+    ("{W/U}{W/U}", "(⚪/🔵)(⚪/🔵)"),
+    ("{2/W}", "(②/⚪)"),
+    ("{R/P}", "(🔴/φ)"),
+    ("{G/U/P}", "(🟢/🔵/φ)"),
+    ("{1}{R} // {1}{U}", "①🔴 // ①🔵"),
+    # Outside the table: left exactly as written, never half-converted.
+    ("{100}", "{100}"), ("{HW}{W}", "{HW}⚪"), ("{W/Z}", "{W/Z}"),
+    ("{21}", "{21}"), ("{01}", "{01}"),
+    ("", ""),
+])
+def test_mana_symbols(db, cost, drawn):
+    assert db._mana_symbols(cost) == drawn
+
+
+def test_lookup_carries_symbols_and_a_scryfall_link(db):
+    _with_costs(db)
+    bears = db.tool_lookup_card({"name": "grizzly bears"}).splitlines()
+    i = bears.index("mana_cost: {1}{G}")
+    assert bears[i + 1] == "mana_symbols: ①🟢"
+    j = bears.index("oracle_id: oid1")
+    assert bears[j + 1] == "scryfall: https://scryfall.com/search?q=oracleid%3Aoid1"
+    island = db.tool_lookup_card({"name": "Island"})
+    assert "mana_symbols" not in island and "scryfall: " in island
+
+
+def test_no_symbols_line_when_the_corpus_carries_no_cost(db):
+    out = db.tool_lookup_card({"name": "grizzly bears"})
+    assert "mana_symbols" not in out and "scryfall: " in out
+
+
+def test_scryfall_url_is_one_wellformed_url_for_any_id(db):
+    assert (db._scryfall_url("a b&c#d")
+            == "https://scryfall.com/search?q=oracleid%3Aa%20b%26c%23d")
+
+
+def test_symbols_survive_the_wire(db):
+    _with_costs(db)
+    resp = db._handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": "lookup_card",
+                                  "arguments": {"name": "grizzly bears"}}})
+    decoded = json.loads(json.dumps(resp))
+    assert "mana_symbols: ①🟢" in decoded["result"]["content"][0]["text"]

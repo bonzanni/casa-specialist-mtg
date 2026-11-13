@@ -86,7 +86,9 @@ requester's text claims:
   again; that retry is the intended recovery.
 - **Otherwise** (Telegram: your own chat, or a question Ellen passed you),
   your final message is the written ruling and nothing else; it is posted to
-  the person exactly as you write it. The first line is the ruling — or, if
+  the person exactly as you write it. As your doctrine says, link each card
+  you looked up, on first mention, to its lookup's `scryfall` line, and draw
+  costs from `mana_symbols`. The first line is the ruling — or, if
   it is tentative, that you are not sure and what you could not check. Then
   two to five plain sentences on why. Name at most the one rule that decides
   it, in passing; no quoted excerpts, no citation list. A clarification is

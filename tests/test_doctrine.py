@@ -114,3 +114,25 @@ def test_a_delegated_answer_is_formatted_like_a_direct_one():
     served = " ".join((_core() + _section("Text projection")).split())
     assert "answer_shown" in served
     assert "format it exactly as you would" in served
+
+
+def test_links_symbols_and_showing_a_card_are_core_rules():
+    """A guest run is served Core and the Guest projection, never the skill
+    or the Text projection, so these three rules and the symbol table must
+    be in Core or a friend in a group gets `{U}{R}` and no link."""
+    core = re.sub(r"\s+", " ", _core())
+    for anchor in ("`scryfall`", "`mana_symbols`", "never from memory",
+                   "linked name first", "written answer"):
+        assert anchor in core, anchor
+    for symbol in "⚪🔵⚫🔴🟢◇Ⓧ↷↶⚡φ①":
+        assert symbol in core, symbol
+
+
+def test_voice_fields_take_no_links_or_symbols():
+    core = re.sub(r"\s+", " ", _core())
+    assert "never in a StructuredOutput field" in core
+
+
+def test_a_guest_may_be_shown_a_card():
+    body = " ".join(_section("Guest projection").split())
+    assert "showing a card" in body

@@ -17,6 +17,7 @@ import os
 import re
 import sqlite3
 import sys
+import urllib.parse
 from pathlib import Path
 
 BUNDLED_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -263,6 +264,45 @@ def tool_lookup_term(args: dict) -> str:
     return f"{row['term']}: {row['definition']}\n{_corpus_info()}"
 
 
+# --- card symbols and the Scryfall link: begin ---
+# A cost drawn for a chat that cannot show the printed symbols. A token this
+# table does not know is returned exactly as written, braces included: an
+# honest "{HW}" beats a wrong symbol, and a half-converted hybrid is one.
+_SYMBOLS = {
+    "W": "\u26aa", "U": "\U0001f535", "B": "\u26ab", "R": "\U0001f534",
+    "G": "\U0001f7e2", "C": "\u25c7", "X": "\u24cd", "S": "\u2744\ufe0f",
+    "E": "\u26a1", "T": "\u21b7", "Q": "\u21b6",
+    "0": "\u24ea", **{str(n): chr(0x245f + n) for n in range(1, 21)},
+}
+_SYMBOL_TOKEN = re.compile(r"\{([^{}]*)\}")
+
+
+def _draw_token(match) -> str:
+    inner = match.group(1)
+    if "/" not in inner:
+        return _SYMBOLS.get(inner, match.group(0))
+    parts = inner.split("/")
+    # "P" is Phyrexian only as the second half of a hybrid, never a colour.
+    drawn = [_SYMBOLS.get(parts[0])] + [
+        "\u03c6" if part == "P" else _SYMBOLS.get(part) for part in parts[1:]]
+    if any(d is None for d in drawn):
+        return match.group(0)
+    # Parenthesised so two hybrids side by side still read as two symbols.
+    return "(" + "/".join(drawn) + ")"
+
+
+def _mana_symbols(cost: str) -> str:
+    return _SYMBOL_TOKEN.sub(_draw_token, cost)
+
+
+def _scryfall_url(oracle_id) -> str:
+    # By oracle id, the one key the corpus carries for every card: no set,
+    # no printing, and no card name to be ambiguous.
+    return ("https://scryfall.com/search?q=oracleid%3A"
+            + urllib.parse.quote(str(oracle_id), safe=""))
+# --- card symbols and the Scryfall link: end ---
+
+
 def _card_text(row) -> str:
     lines = [f"{row['name']} — {row['type_line']}", row["oracle_text"]]
     try:
@@ -298,7 +338,10 @@ def _card_text(row) -> str:
             lines.append("mana_cost: not carried by this corpus")
         else:
             lines.append(f"mana_cost: {cost}" if cost else "mana_cost: none")
+            if cost:
+                lines.append(f"mana_symbols: {_mana_symbols(cost)}")
     lines.append(f"oracle_id: {row['oracle_id']}")
+    lines.append(f"scryfall: {_scryfall_url(row['oracle_id'])}")
     return "\n".join(lines)
 
 
