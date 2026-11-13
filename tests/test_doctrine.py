@@ -136,3 +136,12 @@ def test_voice_fields_take_no_links_or_symbols():
 def test_a_guest_may_be_shown_a_card():
     body = " ".join(_section("Guest projection").split())
     assert "showing a card" in body
+
+
+def test_the_link_and_symbol_rules_leave_no_room_for_the_two_live_slips():
+    """Seen live on 0.11.0, on a question passed by Ellen: the cards were
+    linked on a later mention instead of the first, and a `{1}` in the
+    explanation stayed in braces. Core now says both outright."""
+    core = re.sub(r"\s+", " ", _core())
+    assert "the ruling line included" in core
+    assert "never leave in braces" in core

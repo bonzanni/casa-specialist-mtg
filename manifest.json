@@ -1,7 +1,7 @@
 {
   "api_version": "casa.specialist-component/v1",
   "component_id": "casa/mtg",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "default_persona": {
     "ref": "casa/judge@0.2.0",
     "checksum": "sha256:3daccc4f1146ebd655ab615aecdd0faee2d1e96f5f6005a12fe99934d8b41421"
@@ -15,12 +15,12 @@
     {
       "kind": "plugin/implementation",
       "identifier": "mtg",
-      "digest": "sha256:e37ebb4d55f45b70bccc8fb293b5a91a48bb42256d637a84d22665cb895d04f9",
+      "digest": "sha256:ed47968c2a3cf337bb662fcd6ab898e41a50174d1a5f98d9a54cc25681496dd2",
       "source": {
         "type": "bundled",
         "path": "plugins/mtg"
       }
     }
   ],
-  "checksum": "sha256:a74cf10f520a4349bd45c13a7ecfcdaa1cc709114db674f06695bdceb21e4bb2"
+  "checksum": "sha256:4d0e99cd5c4a7a9ee89477edd09c479d98f374cedd6b052951736182aa9ec47d"
 }
