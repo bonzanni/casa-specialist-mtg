@@ -33,7 +33,7 @@ There are two routes: as a specialist on casa, or as a plugin in Claude Code. Bo
 
 ### On casa
 
-This needs casa 0.367.6 or later. Have a corpus reachable first: pack your build into a `.tar.gz`, put it at an `https://` URL you control, and note the archive's sha256.
+This needs casa 0.372.0 or later. Have a corpus reachable first: pack your build into a `.tar.gz`, put it at an `https://` URL you control, and note the archive's sha256.
 
 ```bash
 tar -C plugins/mtg/data -czf corpus.tar.gz corpus.sqlite corpus.sqlite.sha256
@@ -115,7 +115,7 @@ pip install -r tests/requirements.txt
 python3 -m pytest tests/ -q
 ```
 
-309 tests, no network required — they build fixture databases in `tmp_path`, including genuine FTS5 indexes, so the corpus-integrity checks are exercised without a corpus. One test additionally verifies a real built corpus if one is present, and skips otherwise. `tests/test_mtg_server.py` covers the JSON-RPC framing and adversarial-input contract (malformed requests, notifications, non-standard JSON constants, FTS injection, corrupt hash sidecars); `tests/test_build_corpus.py` covers CR parsing and the card-data transforms against offline fixtures; `tests/test_setup_corpus.py` covers the setup tool's transport and archive handling, with the one function that opens a socket replaced by a fake that serves bytes from memory.
+311 tests, no network required — they build fixture databases in `tmp_path`, including genuine FTS5 indexes, so the corpus-integrity checks are exercised without a corpus. One test additionally verifies a real built corpus if one is present, and skips otherwise. `tests/test_mtg_server.py` covers the JSON-RPC framing and adversarial-input contract (malformed requests, notifications, non-standard JSON constants, FTS injection, corrupt hash sidecars); `tests/test_build_corpus.py` covers CR parsing and the card-data transforms against offline fixtures; `tests/test_setup_corpus.py` covers the setup tool's transport and archive handling, with the one function that opens a socket replaced by a fake that serves bytes from memory.
 
 Test fixtures are invented rules and invented cards in the real formats, never excerpts — the parsers care about shape, and shape is reproducible without copying anything.
 
@@ -139,9 +139,13 @@ The URL and the sha256 are required: `plugin-env.conf` holds them, and the confi
 
 Casa never asks for the token, because it is optional. If your URL needs one, tell the configurator to set `CASA_PLUGIN_MTG_CORPUS_TOKEN` as a 1Password reference (`op://…`). If the automatic setup already failed for lack of it, ask the assistant to have the judge run its corpus setup again once the token is set.
 
-Upgrading to 0.9.2 needs casa 0.367.6 first: the role declares `voice_handoff`, which an older casa refuses. Upgrading from 0.8.0 likewise needed casa 0.360.0: 0.9.0 declares its own chat and ships an avatar, which an older casa refuses. An upgrade to a new version runs the setup again; with a corpus already in place it says so and keeps that corpus. Upgrading from 0.7.0, ask the configurator to set the two values as well, even with a corpus in place: 0.7.0 kept them somewhere the plugin never read, and until they are set casa withholds the plugin. To replace a corpus, change the two values and ask the assistant to have the judge run its corpus setup with `force`.
+Upgrading to 0.10.0 needs casa 0.372.0 first: the five lookup tools are opened to guests, a contract member an older casa refuses. Upgrading to 0.9.2 likewise needed casa 0.367.6: the role declares `voice_handoff`, which an older casa refuses. Upgrading from 0.8.0 likewise needed casa 0.360.0: 0.9.0 declares its own chat and ships an avatar, which an older casa refuses. An upgrade to a new version runs the setup again; with a corpus already in place it says so and keeps that corpus. Upgrading from 0.7.0, ask the configurator to set the two values as well, even with a corpus in place: 0.7.0 kept them somewhere the plugin never read, and until they are set casa withholds the plugin. To replace a corpus, change the two values and ask the assistant to have the judge run its corpus setup with `force`.
 
-The five lookup tools are declared `{"result": "safe"}` under `casa.resultContract`: they return rules text, card text and rulings, never a live link or credential, so nothing is escrowed. Casa refuses any non-setup tool missing from that declaration before it runs, so a new tool must be added there too; `tests/test_result_contract.py` checks the declaration against the server's tool table.
+The five lookup tools are declared `{"result": "safe", "guest": true}` under `casa.resultContract`: they return rules text, card text and rulings, never a live link or credential, so nothing is escrowed, and a guest may call them (next paragraph). Casa refuses any non-setup tool missing from that declaration before it runs, so a new tool must be added there too; `tests/test_result_contract.py` checks the declaration against the server's tool table.
+
+### Guests
+
+Casa 0.372.0 lets other people ask a specialist in a Telegram group you allowed: they mention the judge's bot or reply to one of his answers, and he answers there in one short message. Such a run reaches only the tools a plugin opens to guests with `"guest": true` — for the judge, the five lookups and nothing else: no memory of you, no earlier conversation, no Casa tools, and nothing anyone says there is remembered. The doctrine's `## Guest projection` tells him how to answer strangers: rulings only, grounded in the corpus; deck advice and tournament policy are declined. To enable it, switch Guest Mode on for the judge's bot in BotFather's Mini App (it is off by default), then summon him in the group yourself and say he can answer everyone there; ask the assistant "who may ask my specialists?" to see the list, or tell her to stop one.
 
 Outside casa, pass the same three as tool arguments (`url`, `sha256`, `token`) — but a token passed that way is in the transcript, so prefer the environment.
 

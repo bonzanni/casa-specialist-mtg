@@ -51,3 +51,19 @@ def test_the_served_text_doctrine_carries_both_carriers():
     for anchor in ("StructuredOutput", "spoken_summary", "written ruling",
                    "Write nothing but the answer"):
         assert anchor in " ".join(served.split()), anchor
+
+
+def test_the_served_guest_doctrine_is_core_plus_guest_projection_only():
+    """Casa 0.372.0 compiles a fourth surface, `guest`, for a friend's summons:
+    Core doctrine and `## Guest projection`, the Text projection cut out. The
+    own-chat and Ellen rules must therefore NOT reach a guest, and the guest
+    rules must."""
+    m = casa_modules()
+    doctrine = (ROOT / "role/doctrine.md").read_text(encoding="utf-8")
+    served = " ".join(m["prompt_compiler"].doctrine_for_surface(doctrine, "guest").split())
+    for anchor in ("Invoke the mtg-judge procedure", "not in the corpus",
+                   "name the two readings"):
+        assert anchor in served, anchor
+    for excluded in ("Ellen", "your own chat", "answer_shown", "Gary"):
+        assert excluded not in served, excluded
+

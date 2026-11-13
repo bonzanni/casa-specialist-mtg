@@ -2,9 +2,11 @@
 
 Casa gives a delegated or own-chat specialist the TEXT projection only:
 Core doctrine plus `## Text projection`, with the other projection subtrees
-cut out (`tools.py` `projection_for(..., channel="text")`). Text under
-`## Voice projection` or `## Restricted webhook projection` reaches no model,
-so a rule placed there is a rule nobody follows. These tests fail when an
+cut out (`tools.py` `projection_for(..., channel="text")`), and a guest run
+(Casa 0.372.0, a friend's summons in an allowed group) Core doctrine plus
+`## Guest projection` only. Text under `## Voice projection` or
+`## Restricted webhook projection` reaches no model, so a rule placed there
+is a rule nobody follows. These tests fail when an
 operative rule drifts back into an unserved section, when the voice rules
 leave the served part, or when the doctrine again claims the turn ceiling is
 silent (Casa types it now).
@@ -53,6 +55,19 @@ def test_nothing_operative_lives_in_unserved_projections():
         assert body == pinned, (
             f"'## {title}' is not served to the judge on any surface Casa "
             f"uses for him; it must read exactly {pinned!r}, found {body!r}")
+
+
+def test_the_guest_projection_holds_the_public_rules():
+    """A guest run serves Core doctrine and this section only, so the rules
+    that differ for strangers must live here: corpus-grounded rulings only,
+    nothing else to offer, no one to ask, one message."""
+    body = " ".join(_section("Guest projection").split())
+    assert body, "doctrine has no '## Guest projection'"
+    for anchor in ("ruling first", "not in the corpus", "no one to ask",
+                   "tournament policy", "One message"):
+        assert anchor in body, anchor
+    # The frame already names the operator; the public doctrine never does.
+    assert "Nicola" not in body
 
 
 def test_voice_rules_are_in_the_served_part():

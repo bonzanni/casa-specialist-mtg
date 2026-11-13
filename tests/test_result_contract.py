@@ -35,9 +35,13 @@ def test_contract_covers_exactly_the_non_setup_tools():
         f"served but undeclared (casa refuses these): {sorted(served - declared)}")
 
 
-def test_every_tool_is_declared_safe_with_no_other_member():
+def test_every_tool_is_declared_safe_and_open_to_guests_with_no_other_member():
+    """Casa 0.372.0: `"guest": true` opens a tool to a guest run (a friend's
+    summons in a group the operator allowed). The five lookups return corpus
+    text only, so all five are open; the literal true is the only accepted
+    value, and an older casa refuses the member outright (README's floor)."""
     for name, entry in _casa()["resultContract"]["tools"].items():
-        assert entry == {"result": "safe"}, name
+        assert entry == {"result": "safe", "guest": True}, name
 
 
 def test_the_setup_tool_is_not_listed():
