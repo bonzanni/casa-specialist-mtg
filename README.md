@@ -18,12 +18,13 @@ Trained MTG knowledge is confidently wrong at exactly the wrong moments: subrule
 | `lookup_card` | Oracle text by card name, English or Italian printed name, with fuzzy candidates on a near-miss. A hit also carries a `scryfall:` link to the card and, when the corpus has its cost, a `mana_symbols:` line with the cost drawn in Unicode (`{1}{U}{R}` as ①🔵🔴) |
 | `get_rulings` | Rulings for a card, each labelled `[wotc]` (official) or `[scryfall_note]` (unofficial commentary) |
 | `setup_corpus` | Post-install only: fetch and verify a corpus from a location you configured |
+| `update_corpus` | On request: say whether a newer corpus release is published, and install it when asked to |
 
 Every response ends in a `corpus_info` line naming the CR effective date, the Scryfall snapshot date, and the corpus hash, so a ruling can be traced to the exact data that produced it.
 
-A sixth tool, `setup_corpus`, installs a corpus after the plugin is installed; it is described under [Casa integration](#casa-integration) and does nothing until it is told where the corpus comes from.
+Two more tools look after the corpus itself: `setup_corpus` installs one after the plugin is installed, and `update_corpus` checks for a newer release and installs it when asked. Both are described under [Casa integration](#casa-integration) and do nothing until they are told where the corpus comes from.
 
-The server (`plugins/mtg/server/mtg_server.py`) is stdlib-only, and the query path is read-only by construction: SQLite is opened `mode=ro`, output is bounded, and FTS terms are quoted so a card name can never inject query syntax. Answering a question reaches no shell, no socket and no write — the code that downloads and installs a corpus lives in a separate module (`setup_corpus.py`) that the server imports only when `setup_corpus` is called, so that is a property of what the query path can reach rather than a promise about how it is used.
+The server (`plugins/mtg/server/mtg_server.py`) is stdlib-only, and the query path is read-only by construction: SQLite is opened `mode=ro`, output is bounded, and FTS terms are quoted so a card name can never inject query syntax. Answering a question reaches no shell, no socket and no write — the code that downloads and installs a corpus lives in separate modules (`setup_corpus.py`, `update_corpus.py`) that the server imports only when `setup_corpus` or `update_corpus` is called, so that is a property of what the query path can reach rather than a promise about how it is used.
 
 The corpus is read from `$CLAUDE_PLUGIN_DATA/corpus.sqlite`, in the writable directory Claude Code gives each plugin — under casa as well as standalone — and from the plugin's own `data/corpus.sqlite` only for a server started by hand, where nothing sets that variable.
 
@@ -33,18 +34,20 @@ There are two routes: as a specialist on casa, or as a plugin in Claude Code. Bo
 
 ### On casa
 
-This needs casa 0.372.0 or later. Have a corpus reachable first: pack your build into a `.tar.gz`, put it at an `https://` URL you control, and note the archive's sha256.
+This needs casa 0.372.0 or later. Have a corpus reachable first: pack your build into a `.tar.gz` and put it at an `https://` URL you control.
 
 ```bash
 tar -C plugins/mtg/data -czf corpus.tar.gz corpus.sqlite corpus.sqlite.sha256
 sha256sum corpus.tar.gz
 ```
 
-Then ask casa's configurator in chat:
+The simplest home is an asset on a GitHub release in a repository of yours (a private one is fine). Then the URL is the asset's API address, `https://api.github.com/repos/<owner>/<repo>/releases/assets/<id>`, and you need no checksum: GitHub publishes the archive's sha256 with the asset, and the judge can look for newer releases there later (see [Keeping the corpus current](#keeping-the-corpus-current)). Anywhere else, note the archive's sha256 too.
 
-> Install the MTG specialist from bonzanni/casa-specialist-mtg, the latest version. The corpus is at `<URL>` and its sha256 is `<SHA256>`.
+Keep the corpus source in a 1Password item of your own, for example `MTG Corpus` with the URL in a field named `url`, and, for a private repository, a GitHub token on a token item. Then ask casa's configurator in chat:
 
-Approve the consent message casa sends you. The configurator installs the specialist with its plugin and persona, adds it to the assistant's helpers, and sets the two corpus values; casa then runs `setup_corpus` by itself, and the assistant tells you in one line how that went. See [Casa integration](#casa-integration) for the details, including a URL that needs a token.
+> Install the MTG specialist from bonzanni/casa-specialist-mtg, the latest version. The corpus URL is in the 1Password item `MTG Corpus`, field `url`, and its token is on my GitHub token item.
+
+(For a source that is not a GitHub release, add "its sha256 is `<SHA256>`".) Approve the consent message casa sends you. The configurator installs the specialist with its plugin and persona, adds it to the assistant's helpers, and sets the corpus values; casa then runs `setup_corpus` by itself, and the assistant tells you in one line how that went. See [Casa integration](#casa-integration) for the details.
 
 The judge has a Telegram chat of his own; when the install is done, the assistant offers to set up his bot. Ask him rules questions there: he answers with a short ruling and why, and goes into the detailed rules, card text and rulings when you ask. A rules question asked of the assistant goes to him too, and his answer appears in his chat.
 
@@ -115,7 +118,7 @@ pip install -r tests/requirements.txt
 python3 -m pytest tests/ -q
 ```
 
-343 tests, no network required — they build fixture databases in `tmp_path`, including genuine FTS5 indexes, so the corpus-integrity checks are exercised without a corpus. One test additionally verifies a real built corpus if one is present, and skips otherwise. `tests/test_mtg_server.py` covers the JSON-RPC framing and adversarial-input contract (malformed requests, notifications, non-standard JSON constants, FTS injection, corrupt hash sidecars); `tests/test_build_corpus.py` covers CR parsing and the card-data transforms against offline fixtures; `tests/test_setup_corpus.py` covers the setup tool's transport and archive handling, with the one function that opens a socket replaced by a fake that serves bytes from memory.
+380 tests, no network required — they build fixture databases in `tmp_path`, including genuine FTS5 indexes, so the corpus-integrity checks are exercised without a corpus. One test additionally verifies a real built corpus if one is present, and skips otherwise. `tests/test_mtg_server.py` covers the JSON-RPC framing and adversarial-input contract (malformed requests, notifications, non-standard JSON constants, FTS injection, corrupt hash sidecars); `tests/test_build_corpus.py` covers CR parsing and the card-data transforms against offline fixtures; `tests/test_setup_corpus.py` covers the setup tool's transport and archive handling, with the one function that opens a socket replaced by a fake that serves bytes from memory; `tests/test_update_corpus.py` does the same with a fake GitHub for `update_corpus` and for setup from a release's published digest.
 
 Test fixtures are invented rules and invented cards in the real formats, never excerpts — the parsers care about shape, and shape is reproducible without copying anything.
 
@@ -132,16 +135,22 @@ The plugin declares `casa.setupTool: setup_corpus`, a tool that downloads, verif
 | Variable | Purpose |
 | --- | --- |
 | `CASA_PLUGIN_MTG_CORPUS_URL` | `https://` URL of a `.tar.gz` holding `corpus.sqlite` and `corpus.sqlite.sha256` |
-| `CASA_PLUGIN_MTG_CORPUS_SHA256` | sha256 the downloaded archive must have |
+| `CASA_PLUGIN_MTG_CORPUS_SHA256` | sha256 the downloaded archive must have (optional for a GitHub release asset, whose published digest is used; a value set here always wins) |
 | `CASA_PLUGIN_MTG_CORPUS_TOKEN` | Bearer token, if the URL needs one (optional) |
 
-The URL and the sha256 are required: `plugin-env.conf` holds them, and the configurator sets them during the install, either from what you tell it or from a matching 1Password item. Until both resolve, casa withholds the plugin and a question to the judge comes back saying which variables are missing, rather than failing quietly. Casa holds the setup until then too, and runs it by itself as soon as they resolve. The specialist's own role does not need to grant the tool: casa's server-level grant covers every tool on the plugin's MCP server.
+The URL is required: `plugin-env.conf` holds it, and the configurator sets it during the install, either from what you tell it or from a matching 1Password item. Until it resolves, casa withholds the plugin and a question to the judge comes back saying which variable is missing, rather than failing quietly. Casa holds the setup until then too, and runs it by itself as soon as it resolves. The sha256 is required only when the URL is not a GitHub release asset; without one there, the setup refuses and says so. The specialist's own role does not need to grant the tool: casa's server-level grant covers every tool on the plugin's MCP server.
 
-Casa never asks for the token, because it is optional. If your URL needs one, tell the configurator to set `CASA_PLUGIN_MTG_CORPUS_TOKEN` as a 1Password reference (`op://…`). If the automatic setup already failed for lack of it, ask the assistant to have the judge run its corpus setup again once the token is set.
+Casa never asks for the token or the sha256, because both are optional to it. If your URL needs a token, tell the configurator to set `CASA_PLUGIN_MTG_CORPUS_TOKEN` as a 1Password reference (`op://…`). If the automatic setup already failed for lack of it, ask the assistant to have the judge run its corpus setup again once the token is set.
 
-Upgrading to 0.10.0 needs casa 0.372.0 first: the five lookup tools are opened to guests, a contract member an older casa refuses. Upgrading to 0.9.2 likewise needed casa 0.367.6: the role declares `voice_handoff`, which an older casa refuses. Upgrading from 0.8.0 likewise needed casa 0.360.0: 0.9.0 declares its own chat and ships an avatar, which an older casa refuses. An upgrade to a new version runs the setup again; with a corpus already in place it says so and keeps that corpus. Upgrading from 0.7.0, ask the configurator to set the two values as well, even with a corpus in place: 0.7.0 kept them somewhere the plugin never read, and until they are set casa withholds the plugin. To replace a corpus, change the two values and ask the assistant to have the judge run its corpus setup with `force`.
+Upgrading to 0.10.0 needs casa 0.372.0 first: the five lookup tools are opened to guests, a contract member an older casa refuses. Upgrading to 0.9.2 likewise needed casa 0.367.6: the role declares `voice_handoff`, which an older casa refuses. Upgrading from 0.8.0 likewise needed casa 0.360.0: 0.9.0 declares its own chat and ships an avatar, which an older casa refuses. An upgrade to a new version runs the setup again; with a corpus already in place it says so, keeps that corpus, and reports success. Upgrading from 0.7.0, ask the configurator to set the two values as well, even with a corpus in place: 0.7.0 kept them somewhere the plugin never read, and until they are set casa withholds the plugin. To replace a corpus from a GitHub release source, ask the judge to update it (next section); from any other source, change the values and ask the assistant to have the judge run its corpus setup with `force`.
 
-The five lookup tools are declared `{"result": "safe", "guest": true}` under `casa.resultContract`: they return rules text, card text and rulings, never a private link or credential (the `scryfall:` line is a public address), so nothing is escrowed, and a guest may call them (next paragraph). Casa refuses any non-setup tool missing from that declaration before it runs, so a new tool must be added there too; `tests/test_result_contract.py` checks the declaration against the server's tool table.
+The five lookup tools are declared `{"result": "safe", "guest": true}` under `casa.resultContract`: they return rules text, card text and rulings, never a private link or credential (the `scryfall:` line is a public address), so nothing is escrowed, and a guest may call them (see [Guests](#guests)). `update_corpus` is declared `{"result": "safe"}` with no `guest` member: it returns one line of status, and a stranger in a group cannot reach it. Casa refuses any non-setup tool missing from that declaration before it runs, so a new tool must be added there too; `tests/test_result_contract.py` checks the declaration against the server's tool table.
+
+### Keeping the corpus current
+
+The judge keeps the corpus he was installed with until you ask. Ask him "is your corpus up to date?" or "is there a newer corpus?" and he calls `update_corpus`, which answers with one line: up to date, a newer release available, or the installed release unknown (a corpus installed before 0.12.0, or from elsewhere). Ask him to update it and he calls it with `install: true`: the newer release's asset is downloaded and installed through the same verified path as the first install, with the sha256 GitHub publishes for it as the pinned hash, and only once every check has passed does it replace the corpus in use. He then says what changed, for example "Now on the 2026-11-06 rules and the 2026-11-09 cards (release <tag>)." Any failure keeps the current corpus and says why. Nothing is checked or installed on a schedule.
+
+This works when `CASA_PLUGIN_MTG_CORPUS_URL` is a GitHub release-asset API URL: the tool asks that repository's latest release (`/releases/latest`, which leaves out drafts and pre-releases) for an asset with the same name as the configured one, using the token when one is set. Any other URL is a source pinned to one file; the tool says so and changes nothing. Which release is installed is recorded beside the corpus in `corpus.release.json`, with the repository and asset name it came from, written by both tools after the corpus is in place; a record from another repository counts as unknown, and if the configured asset is gone, the recorded name decides which asset to look for. The configured URL itself is left as it is.
 
 ### Links, symbols and showing a card
 
@@ -153,14 +162,14 @@ Casa 0.372.0 lets other people ask a specialist in a Telegram group you allowed:
 
 Outside casa, pass the same three as tool arguments (`url`, `sha256`, `token`) — but a token passed that way is in the transcript, so prefer the environment.
 
-What the tool will not do:
+What the two corpus tools will not do:
 
 - speak anything but `https`, on the first request and on every redirect;
 - carry the token across a host change — a release asset usually redirects to a separate storage host, so the hop is followed and the credential is not;
 - keep reading past a byte cap or a wall-clock deadline, both checked while the body is arriving rather than after it has landed;
-- unpack anything before the archive's sha256 matches what you pinned;
+- unpack anything before the archive's sha256 matches what you pinned, or, with nothing pinned for a GitHub release asset, the digest GitHub publishes for it;
 - extract an absolute path, a `..` component, a symlink, a hardlink, a device node, or more decompressed bytes than the cap allows;
 - install a corpus whose bundled `corpus.sqlite.sha256` disagrees with the `corpus.sqlite` beside it, since that sidecar is the provenance every response quotes;
-- replace an existing corpus unless asked to with `force`, because swapping one out under a judge mid-ruling makes the citations it already gave irreproducible.
+- replace an existing corpus unless asked to with `force` (or, for `update_corpus`, with `install`), because swapping one out under a judge mid-ruling makes the citations it already gave irreproducible.
 
 The corpus lands in `$CLAUDE_PLUGIN_DATA`, the plugin's writable directory, and never inside the installed plugin tree — that tree is verified by content, and writing into it would make casa read the plugin as corrupt on the next reload.

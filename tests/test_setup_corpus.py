@@ -434,15 +434,39 @@ def test_decompression_bomb_is_refused_before_it_is_written(monkeypatch, data_di
 
 # --- overwrite and cleanup ---------------------------------------------------
 
-def test_existing_corpus_is_not_replaced_without_force(monkeypatch, asset, data_dir):
+def test_existing_corpus_is_kept_without_force_and_that_is_a_success(
+        monkeypatch, asset, data_dir):
+    """Casa runs the setup tool again after every upgrade. With a corpus in
+    place that run must leave it alone AND report success: an error here was
+    shown to the operator as a failed setup after every upgrade."""
     blob, digest, _ = asset
     data_dir.mkdir(parents=True)
     (data_dir / sc.CORPUS_NAME).write_bytes(b"the corpus in use")
     transport = _Transport({ORIGIN: _FakeResponse(blob)})
-    with pytest.raises(sc.SetupError, match="already exists"):
-        _install(monkeypatch, transport, expected_sha256=digest, data_dir=data_dir)
+    out = _install(monkeypatch, transport, expected_sha256=digest,
+                   data_dir=data_dir)
+    assert out.startswith("kept the installed corpus")
     assert (data_dir / sc.CORPUS_NAME).read_bytes() == b"the corpus in use"
-    assert transport.requests == []  # refused before anything is downloaded
+    assert transport.requests == []  # declined before anything is downloaded
+
+
+def test_the_post_upgrade_tool_run_keeps_the_corpus_without_a_network_call(
+        monkeypatch, data_dir):
+    """The run casa makes after an upgrade: no arguments, a GitHub source and
+    no checksum. It must not even ask GitHub for the digest."""
+    import plugins.mtg.server.mtg_server as srv
+    data_dir.mkdir(parents=True)
+    (data_dir / sc.CORPUS_NAME).write_bytes(b"the corpus in use")
+    transport = _Transport({})
+    monkeypatch.setattr(sc, "_urlopen", transport)
+    monkeypatch.setattr(srv, "DB_PATH", data_dir / sc.CORPUS_NAME)
+    monkeypatch.setenv(sc.URL_ENV, "https://api.github.com/repos/o/r/releases/assets/7")
+    monkeypatch.delenv(sc.SHA256_ENV, raising=False)
+    response = srv._handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                            "params": {"name": "setup_corpus", "arguments": {}}})
+    assert response["result"]["isError"] is False
+    assert "kept the installed corpus" in response["result"]["content"][0]["text"]
+    assert transport.requests == []
 
 
 def test_force_replaces_an_existing_corpus(monkeypatch, asset, data_dir):
@@ -500,11 +524,12 @@ def test_query_path_import_pulls_in_no_networking(tmp_path):
         "sys.path.insert(0, %r);"
         "import plugins.mtg.server.mtg_server;"
         "print('urllib.request' in sys.modules, 'tarfile' in sys.modules,"
-        " 'plugins.mtg.server.setup_corpus' in sys.modules)" % str(root)
+        " 'plugins.mtg.server.setup_corpus' in sys.modules,"
+        " 'plugins.mtg.server.update_corpus' in sys.modules)" % str(root)
     )
     out = subprocess.run([sys.executable, "-c", probe], capture_output=True,
                          text=True, check=True).stdout.strip()
-    assert out == "False False False"
+    assert out == "False False False False"
 
 
 def test_tool_call_reports_a_setup_failure_as_an_error(monkeypatch):

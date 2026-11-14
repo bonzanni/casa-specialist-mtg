@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """Install a prebuilt corpus into the plugin's data directory.
 
-Reached only through the `setup_corpus` MCP tool, which imports this module
-lazily. Nothing on the query path imports it, so that path's "no network, no
-writes" property stays a fact about what the process can reach rather than a
-promise about how it is called.
+Reached only through the `setup_corpus` and `update_corpus` MCP tools, which
+import it lazily. Nothing on the query path imports it, so that path's "no
+network, no writes" property stays a fact about what the process can reach
+rather than a promise about how it is called.
 
-The operator says where the corpus lives and what it must hash to; this
+The operator says where the corpus lives and, unless it is a GitHub release
+asset whose published digest stands in, what it must hash to; this
 repository names no location and ships no corpus.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -19,6 +21,7 @@ import sqlite3
 import tarfile
 import tempfile
 import time
+from datetime import datetime, timezone
 import urllib.error
 import urllib.request
 from pathlib import Path, PurePosixPath
@@ -26,6 +29,10 @@ from urllib.parse import urljoin, urlsplit
 
 CORPUS_NAME = "corpus.sqlite"
 SIDECAR_NAME = CORPUS_NAME + ".sha256"
+# Which published release the installed corpus came from, when that is known.
+# Missing means "unknown", which is what every corpus installed before this
+# file existed reports.
+RELEASE_NAME = "corpus.release.json"
 
 BUNDLED_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA"
@@ -45,7 +52,12 @@ MAX_EXTRACTED_BYTES = 1024 * 1024 * 1024
 DOWNLOAD_TIMEOUT_S = 900.0
 SOCKET_TIMEOUT_S = 30.0
 MAX_REDIRECTS = 5
+# A GitHub API answer (a release with its notes and asset list) is a few KB.
+MAX_JSON_BYTES = 4 * 1024 * 1024
 _CHUNK = 65536
+
+_OCTET = "application/octet-stream"
+_GITHUB_JSON = "application/vnd.github+json"
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
 _REDIRECT_CODES = frozenset((301, 302, 303, 307, 308))
@@ -106,16 +118,18 @@ def _https_host(url: str) -> str:
     return parts.hostname.lower()
 
 
-def _build_request(url: str, token: str | None, origin_host: str):
+def _build_request(url: str, token: str | None, origin_host: str,
+                   accept: str = _OCTET):
     host = _https_host(url)
     # Accept matters, not just politeness: GitHub's authenticated release-asset
     # API URL is the stable token-authenticated route for a private release,
     # and without this header it answers with the asset's METADATA JSON. That
     # JSON downloads happily and then fails the sha256 check, which reads as a
-    # corrupted asset rather than the wrong endpoint.
+    # corrupted asset rather than the wrong endpoint. The metadata is asked
+    # for on purpose only by get_json, which passes the JSON media type.
     request = urllib.request.Request(url, headers={
         "User-Agent": "casa-mtg-setup",
-        "Accept": "application/octet-stream",
+        "Accept": accept,
     })
     # The token authenticates the operator to the host they named. A release
     # asset normally redirects to a separate storage host, so the hop itself
@@ -127,7 +141,8 @@ def _build_request(url: str, token: str | None, origin_host: str):
     return request
 
 
-def _open_asset(url: str, token: str | None, deadline: float):
+def _open_asset(url: str, token: str | None, deadline: float,
+                accept: str = _OCTET):
     origin_host = _https_host(url)
     current = url
     for _ in range(MAX_REDIRECTS + 1):
@@ -136,7 +151,7 @@ def _open_asset(url: str, token: str | None, deadline: float):
         # would not have been given.
         if time.monotonic() > deadline:
             raise SetupError("download timed out while following redirects")
-        request = _build_request(current, token, origin_host)
+        request = _build_request(current, token, origin_host, accept)
         try:
             return _urlopen(request, SOCKET_TIMEOUT_S)
         except urllib.error.HTTPError as exc:
@@ -195,6 +210,140 @@ def _download(url: str, token: str | None, dest: Path, *,
     finally:
         response.close()
     return digest.hexdigest(), total
+
+
+def get_json(url: str, token: str | None, *,
+              timeout: float = SOCKET_TIMEOUT_S * 2) -> dict:
+    """GET a JSON object over the same transport the download uses: https on
+    every hop, the token only on the host it was given for, a byte cap and a
+    deadline."""
+    deadline = time.monotonic() + timeout
+    response = _open_asset(url, token, deadline, accept=_GITHUB_JSON)
+    try:
+        body = response.read(MAX_JSON_BYTES + 1)
+    finally:
+        response.close()
+    if len(body) > MAX_JSON_BYTES:
+        raise SetupError(f"{url} answered with more than {MAX_JSON_BYTES} bytes")
+    try:
+        value = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise SetupError(f"{url} did not answer with JSON") from None
+    if not isinstance(value, dict):
+        raise SetupError(f"{url} did not answer with a JSON object")
+    return value
+
+
+# --- GitHub release assets ---------------------------------------------------
+# A corpus published as a GitHub release asset carries two things a plain URL
+# does not: a digest GitHub computed on upload, so the operator need not pin
+# one by hand, and a place to look for the next release.
+
+_GITHUB_API_HOST = "api.github.com"
+_GITHUB_ASSET_PATH = re.compile(
+    r"^/repos/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/releases/assets/([0-9]+)/?$")
+_DIGEST_RE = re.compile(r"^sha256:([0-9a-f]{64})$", re.IGNORECASE)
+_DOWNLOAD_TAG_RE = re.compile(r"/releases/download/([^/]+)/[^/]+$")
+
+
+def github_asset(url: str) -> tuple[str, str, int] | None:
+    """(owner, repo, asset id) when *url* is a GitHub release-asset API URL
+    (https://api.github.com/repos/<owner>/<repo>/releases/assets/<id>);
+    None for anything else, which is a source pinned to one file."""
+    parts = urlsplit(url)
+    if (parts.scheme.lower() != "https"
+            or (parts.hostname or "").lower() != _GITHUB_API_HOST
+            or parts.query or parts.fragment):
+        return None
+    match = _GITHUB_ASSET_PATH.match(parts.path)
+    if not match:
+        return None
+    return match.group(1), match.group(2), int(match.group(3))
+
+
+def source_of(owner: str, repo: str) -> str:
+    """The canonical name of a release source, as the release record keeps
+    it: GitHub owner and repository names are case-insensitive."""
+    return f"{owner}/{repo}".lower()
+
+
+def asset_api_url(owner: str, repo: str, asset_id: int) -> str:
+    return (f"https://{_GITHUB_API_HOST}/repos/{owner}/{repo}"
+            f"/releases/assets/{asset_id}")
+
+
+def latest_release_url(owner: str, repo: str) -> str:
+    return f"https://{_GITHUB_API_HOST}/repos/{owner}/{repo}/releases/latest"
+
+
+def published_sha256(asset: dict) -> str | None:
+    """The sha256 GitHub publishes for a release asset (`digest`), or None
+    when the asset carries none."""
+    match = _DIGEST_RE.match(str(asset.get("digest") or ""))
+    return match.group(1).lower() if match else None
+
+
+def asset_metadata(url: str, token: str | None) -> dict:
+    """The release-asset JSON GitHub answers when the asset URL is asked for
+    without the octet-stream Accept header."""
+    return get_json(url, token)
+
+
+def tag_of_asset(asset: dict) -> str | None:
+    """The release tag, read off the asset's browser download URL
+    (…/releases/download/<tag>/<name>); the asset JSON has no tag field."""
+    match = _DOWNLOAD_TAG_RE.search(
+        urlsplit(str(asset.get("browser_download_url") or "")).path)
+    return match.group(1) if match else None
+
+
+# --- the installed release record --------------------------------------------
+
+_SOURCE_RE = re.compile(r"^[a-z0-9._-]+/[a-z0-9._-]+$")
+
+
+def _valid_release(value) -> bool:
+    """A record is trusted only whole: which repository (`source`), which
+    asset (`asset_id`, and `asset_name` when known), and the archive's hash.
+    Anything else describes no corpus anyone can compare against."""
+    if not isinstance(value, dict):
+        return False
+    asset_id = value.get("asset_id")
+    tag, name = value.get("tag"), value.get("asset_name")
+    return (isinstance(value.get("source"), str)
+            and bool(_SOURCE_RE.match(value["source"]))
+            and isinstance(asset_id, int) and not isinstance(asset_id, bool)
+            and isinstance(value.get("archive_sha256"), str)
+            and bool(_SHA256_RE.match(value["archive_sha256"]))
+            and (tag is None or (isinstance(tag, str) and bool(tag)))
+            and (name is None or (isinstance(name, str) and bool(name))))
+
+
+def read_release(data_dir: Path | str) -> dict | None:
+    """The record of which release the installed corpus came from, or None
+    when there is none or it is not a valid record: both mean "unknown"."""
+    try:
+        value = json.loads((Path(data_dir) / RELEASE_NAME).read_text("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    return value if _valid_release(value) else None
+
+
+def _write_release(data_dir: Path, record: dict) -> None:
+    """Best effort, and only after the corpus is in place: a record that
+    could not be written reads as "unknown" at the next check, which offers
+    the update again, rather than turning an installed corpus into a failure
+    report."""
+    path = data_dir / RELEASE_NAME
+    temp = path.with_name(path.name + ".tmp")
+    try:
+        temp.write_text(json.dumps(record, sort_keys=True) + "\n", "utf-8")
+        os.replace(temp, path)
+    except OSError:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
 
 
 def _safe_member_name(member: tarfile.TarInfo) -> str:
@@ -377,11 +526,31 @@ def _verify_is_corpus(corpus: Path) -> None:
     finally:
         con.close()
 
+
+def _kept(target: Path) -> str:
+    # A corpus swapped out underneath a judge mid-ruling is worse than a
+    # setup that declines: the citations it already gave stop being
+    # reproducible from what is now on disk. Declining is still a success:
+    # casa runs this tool again after every upgrade, and the corpus in place
+    # is exactly what that run should leave alone.
+    return f"kept the installed corpus at {target}; pass force to replace it"
+
+
 def install_corpus(*, url: str, expected_sha256: str, token: str | None = None,
                    data_dir: Path | str | None = None, force: bool = False,
+                   release: dict | None = None,
                    max_download_bytes: int = MAX_DOWNLOAD_BYTES,
                    max_extracted_bytes: int = MAX_EXTRACTED_BYTES,
                    timeout: float = DOWNLOAD_TIMEOUT_S) -> str:
+    """Download, verify and install the archive at *url*.
+
+    The one install path: `setup_corpus` and `update_corpus` both end here.
+    Every check runs on a staged copy, and the corpus in use is replaced only
+    once all of them have passed, so any failure leaves it untouched.
+    *release* ({"source", "asset_id", "asset_name", "tag"}) is recorded
+    beside the corpus after the swap; without it the previous record is
+    dropped, since it would describe a corpus that is no longer there.
+    """
     expected = str(expected_sha256).strip().lower()
     if not _SHA256_RE.match(expected):
         raise SetupError("corpus sha256 must be 64 hexadecimal characters")
@@ -392,11 +561,7 @@ def install_corpus(*, url: str, expected_sha256: str, token: str | None = None,
     data_dir = Path(default_data_dir() if data_dir is None else data_dir)
     target = data_dir / CORPUS_NAME
     if target.exists() and not force:
-        # A corpus swapped out underneath a judge mid-ruling is worse than a
-        # setup that refuses: the citations it already gave stop being
-        # reproducible from what is now on disk.
-        raise SetupError(
-            f"{target} already exists; pass force to replace it")
+        return _kept(target)
     data_dir.mkdir(parents=True, exist_ok=True)
 
     # Staged inside the destination directory so the final moves are renames
@@ -424,15 +589,26 @@ def install_corpus(*, url: str, expected_sha256: str, token: str | None = None,
         # old sidecar — stale provenance, which the server reports as fact.
         # Dropping it first makes the window report `unknown` instead, which
         # is what the server already handles and what this comment used to
-        # claim without arranging for it.
-        sidecar_target = data_dir / SIDECAR_NAME
-        if sidecar_target.exists():
-            sidecar_target.unlink()
+        # claim without arranging for it. The release record goes the same
+        # way, for the same reason, and is written last.
+        for stale in (data_dir / RELEASE_NAME, data_dir / SIDECAR_NAME):
+            if stale.exists():
+                stale.unlink()
         os.replace(staged / CORPUS_NAME, target)
         os.replace(staged / SIDECAR_NAME, data_dir / SIDECAR_NAME)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
+    if release is not None:
+        _write_release(data_dir, {
+            "source": release.get("source"),
+            "asset_id": release.get("asset_id"),
+            "asset_name": release.get("asset_name"),
+            "tag": release.get("tag"),
+            "archive_sha256": actual,
+            "installed_at": datetime.now(timezone.utc).isoformat(
+                timespec="seconds"),
+        })
     return (f"corpus installed at {target}: {size} bytes downloaded, "
             f"{CORPUS_NAME} sha256 {corpus_sha[:16]}…")
 
@@ -440,7 +616,7 @@ def install_corpus(*, url: str, expected_sha256: str, token: str | None = None,
 _TRUE = frozenset(("1", "true", "yes", "on"))
 
 
-def _as_bool(value) -> bool:
+def as_bool(value) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in _TRUE
@@ -460,17 +636,44 @@ def run(args: dict | None = None, data_dir: Path | str | None = None) -> str:
     Argument-free when the environment carries the operator's answers, which
     is how casa runs it; the same three can be passed explicitly so the tool
     is usable, and testable, without a casa deployment behind it.
+
+    The sha256 is optional for a GitHub release asset: the digest GitHub
+    publishes for it is used instead. A hand-set sha256 always wins.
     """
     args = args if isinstance(args, dict) else {}
     url = _input(args, "url", URL_ENV)
     expected = _input(args, "sha256", SHA256_ENV)
     token = _input(args, "token", TOKEN_ENV) or None
-    missing = [name for name, value in (("url", url), ("sha256", expected))
-               if not value]
-    if missing:
+    force = as_bool(args.get("force", False))
+    if not url:
         raise SetupError(
-            f"corpus location is not configured: no {', '.join(missing)}. "
-            f"Set {URL_ENV} and {SHA256_ENV}, or pass them as arguments.")
+            f"corpus location is not configured: no url. Set {URL_ENV} "
+            f"(and {SHA256_ENV}, unless the URL is a GitHub release asset), "
+            "or pass them as arguments.")
+
+    data_dir = Path(default_data_dir() if data_dir is None else data_dir)
+    if (data_dir / CORPUS_NAME).exists() and not force:
+        return _kept(data_dir / CORPUS_NAME)  # before any network call
+
+    release = None
+    asset = github_asset(url)
+    if asset is not None:
+        release = {"source": source_of(asset[0], asset[1]),
+                   "asset_id": asset[2], "asset_name": None, "tag": None}
+        if not expected:
+            metadata = asset_metadata(url, token)
+            expected = published_sha256(metadata) or ""
+            if not expected:
+                raise SetupError(
+                    "the release publishes no sha256 digest for this asset; "
+                    f"set {SHA256_ENV} to the archive's sha256")
+            release["tag"] = tag_of_asset(metadata)
+            name = metadata.get("name")
+            release["asset_name"] = name if isinstance(name, str) and name else None
+    elif not expected:
+        raise SetupError(
+            f"corpus sha256 is not configured: set {SHA256_ENV}, or pass it "
+            "as an argument. Only a GitHub release asset URL can do without "
+            "one, because GitHub publishes its digest.")
     return install_corpus(url=url, expected_sha256=expected, token=token,
-                          data_dir=data_dir,
-                          force=_as_bool(args.get("force", False)))
+                          data_dir=data_dir, force=force, release=release)

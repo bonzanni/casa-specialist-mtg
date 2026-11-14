@@ -5,13 +5,15 @@ The query path is read-only by construction: sqlite opened mode=ro; constant
 DB path; no shell; no network; every tool returns bounded text ending in a
 corpus_info line.
 
-The one exception is `setup_corpus`, which provisions the corpus after
-install. Its implementation lives in a separate module that is imported only
-when that tool is called, so answering a rules question can never reach code
-that opens a socket or writes a file.
+The exceptions are `setup_corpus`, which provisions the corpus after install,
+and `update_corpus`, which checks for (and on request installs) a newer one.
+Their implementations live in separate modules that are imported only when
+one of those tools is called, so answering a rules question can never reach
+code that opens a socket or writes a file.
 """
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import re
@@ -497,32 +499,37 @@ def tool_get_rulings(args: dict) -> str:
     return "\n".join(out[:12]) + "\n" + _corpus_info()
 
 
-def _setup_corpus_module():
-    """Import the corpus installer, script-launched or package-imported.
+def _sibling_module(name: str):
+    """Import a sibling module on demand, script-launched or package-imported.
 
     The plugin runs this file as a script (no package context) but the tests
     import it as `plugins.mtg.server.mtg_server`; both have to resolve the
     sibling module, and neither may resolve it at import time.
     """
-    try:
-        from . import setup_corpus
-    except ImportError:
-        here = str(Path(__file__).resolve().parent)
-        if here not in sys.path:
-            sys.path.insert(0, here)
-        import setup_corpus
-    return setup_corpus
+    if __package__:
+        return importlib.import_module(f"{__package__}.{name}")
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    return importlib.import_module(name)
 
 
 def tool_setup_corpus(args: dict) -> str:
-    setup = _setup_corpus_module()
+    setup = _sibling_module("setup_corpus")
     # The installer is told where to write rather than resolving it again:
     # the corpus must land exactly where this server reads from, and one
     # resolution cannot disagree with itself.
     summary = setup.run(args, data_dir=DB_PATH.parent)
-    # The file the open connection refers to has just been replaced; drop it
-    # so the next question is answered from the corpus that is now on disk.
+    # The file the open connection refers to may just have been replaced;
+    # drop it so the next question is answered from the corpus now on disk.
     _reset_db()
+    return summary + "\n" + _corpus_info_safe()
+
+
+def tool_update_corpus(args: dict) -> str:
+    update = _sibling_module("update_corpus")
+    summary = update.run(args, data_dir=DB_PATH.parent)
+    _reset_db()  # as for setup_corpus: the corpus may have been replaced
     return summary + "\n" + _corpus_info_safe()
 
 
@@ -542,21 +549,32 @@ TOOLS = {
     "get_rulings": (tool_get_rulings, {"oracle_id": "from lookup_card"}),
     "setup_corpus": (tool_setup_corpus, {
         "url": "https:// URL of the corpus tarball (default: configured)",
-        "sha256": "expected sha256 of that tarball (default: configured)",
+        "sha256": "expected sha256 of that tarball (default: configured; "
+                  "a GitHub release asset's published digest otherwise)",
         "token": "bearer token, if the URL needs one; prefer the "
                  "configured value — an argument goes in the transcript",
         "force": {"type": "boolean",
                   "description": "replace an existing corpus"},
     }),
+    "update_corpus": (tool_update_corpus, {
+        "install": {"type": "boolean",
+                    "description": "install the newer release; only when "
+                                   "asked to update the corpus (default: "
+                                   "just check)"},
+    }),
 }
 
 # Casa runs a setup tool with no arguments, so nothing in its schema may be
-# required — the force flag is for an operator asking for it by hand.
-ARGUMENT_FREE_TOOLS = frozenset(("setup_corpus",))
+# required — the force flag is for an operator asking for it by hand. Called
+# bare, update_corpus only checks; installing is the explicit `install`.
+ARGUMENT_FREE_TOOLS = frozenset(("setup_corpus", "update_corpus"))
 
 _TOOL_DESCRIPTIONS = {
     "setup_corpus": ("MTG corpus (setup): download and install the corpus "
                      "from the location configured by the operator"),
+    "update_corpus": ("MTG corpus (update): say whether a newer corpus "
+                      "release is published; with install, install it "
+                      "through the same verified path as setup"),
 }
 
 

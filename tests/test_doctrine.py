@@ -145,3 +145,15 @@ def test_the_link_and_symbol_rules_leave_no_room_for_the_two_live_slips():
     core = re.sub(r"\s+", " ", _core())
     assert "the ruling line included" in core
     assert "never leave in braces" in core
+
+
+def test_the_corpus_update_is_on_request_only_and_never_reaches_a_guest():
+    """update_corpus checks when asked about freshness and installs only when
+    asked to update. The rule lives in the Text projection: a guest run cannot
+    call the tool (it is not open to guests), so Core and the Guest projection
+    do not mention it."""
+    text = " ".join(_section("Text projection").split())
+    assert "`update_corpus`" in text
+    assert "`install: true` only when you are asked to update the corpus" in text
+    assert "never on your own initiative" in text
+    assert "update_corpus" not in _core() + _section("Guest projection")
