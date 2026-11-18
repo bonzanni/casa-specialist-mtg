@@ -154,7 +154,7 @@ This works when `CASA_PLUGIN_MTG_CORPUS_URL` is a GitHub release-asset API URL: 
 
 ### Links, symbols and showing a card
 
-In a written answer the judge links each card he looked up to its Scryfall page and draws costs as Unicode symbols, since the printed mana symbols are not his to use. Ask him to show a card and he answers with the linked name, cost and type line; the picture you see is Telegram's own preview of that Scryfall link. The plugin itself still makes no network call. Spoken answers carry neither links nor symbols.
+In a written answer the judge links each card he looked up to its Scryfall page and draws costs as Unicode symbols, since the printed mana symbols are not his to use. Ask him to show a card and he answers with the linked name, cost and type line; the link opens the card's Scryfall page; no picture appears under the message. The plugin itself still makes no network call. Spoken answers carry neither links nor symbols.
 
 ### Guests
 

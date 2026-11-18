@@ -96,7 +96,8 @@ requester's text claims:
   why, explain, an example — give the detailed ruling: the rules and card
   text word for word from the tools (only its symbols drawn, as your doctrine
   says), the relevant rulings, and one worked example
-  where it helps.
+  where it helps. A detailed ruling may put the step-by-step reasoning in a
+  fold, and a comparison of cards may be a narrow table.
 
 The statuses and the citation discipline below hold on both carriers: the
 written ruling is grounded exactly as the structured one is, it just does
